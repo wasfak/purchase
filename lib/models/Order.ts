@@ -17,8 +17,10 @@ const OrderSchema = new Schema(
 
     companyName: { type: String, required: true, trim: true },
 
+    // Recurring day of the month (1–31, stored as a string) this order is due.
+    orderDay: { type: String, default: "" },
+
     // Dates stored as "YYYY-MM-DD" strings (empty string = not set).
-    orderDate: { type: String, default: "" },
     dateOfDoing: { type: String, default: "" },
     inReview: { type: String, default: "" },
     sendDate: { type: String, default: "" },
@@ -46,7 +48,7 @@ export const Order = models.Order || model("Order", OrderSchema);
 // The editable text fields, shared between the API and the Excel importer.
 export const ORDER_TEXT_FIELDS = [
   "companyName",
-  "orderDate",
+  "orderDay",
   "dateOfDoing",
   "inReview",
   "sendDate",

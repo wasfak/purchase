@@ -52,7 +52,7 @@ export async function PATCH(
 
   // The ownerId in the filter enforces that you can only touch your own tasks.
   const task = await Task.findOneAndUpdate({ _id: id, ownerId: userId }, update, {
-    new: true,
+    returnDocument: "after",
   });
 
   if (!task) {

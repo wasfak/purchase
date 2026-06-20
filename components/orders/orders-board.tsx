@@ -9,13 +9,13 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toDateStr } from "@/lib/dates";
 
-type FieldType = "text" | "date" | "textarea";
+type FieldType = "text" | "date" | "textarea" | "day";
 
 type Column = { key: string; label: string; type: FieldType };
 
 const COLUMNS: Column[] = [
   { key: "companyName", label: "Company name", type: "text" },
-  { key: "orderDate", label: "Order date", type: "date" },
+  { key: "orderDay", label: "Order day", type: "day" },
   { key: "dateOfDoing", label: "Date of doing", type: "date" },
   { key: "inReview", label: "In review", type: "date" },
   { key: "sendDate", label: "Send date", type: "date" },
@@ -26,9 +26,10 @@ const COLUMNS: Column[] = [
   { key: "notes", label: "Order notes", type: "textarea" },
 ];
 
-// Fields that can be changed after the order is created. Company name and
-// order date are set once, at creation, and are read-only afterwards.
+// Fields that can be changed after the order is created. Company name is set
+// once, at creation, and is read-only afterwards.
 const EDITABLE_FIELDS = new Set([
+  "orderDay",
   "dateOfDoing",
   "inReview",
   "sendDate",
@@ -43,7 +44,9 @@ const EDITABLE_FIELDS = new Set([
 const HEADER_ALIASES: Record<string, string> = {
   "company name": "companyName",
   company: "companyName",
-  "order date": "orderDate",
+  "order day": "orderDay",
+  "order date": "orderDay",
+  day: "orderDay",
   "date of doing": "dateOfDoing",
   "in review": "inReview",
   "send date": "sendDate",
@@ -71,6 +74,48 @@ function displayDate(v: string): string {
   return v;
 }
 
+function displayDay(v: string): string {
+  const n = parseInt(v, 10);
+  if (!n || n < 1 || n > 31) return "";
+  return `Day ${n}`;
+}
+
+// How many days past the monthly order day before we flag it as overdue.
+const OVERDUE_GRACE_DAYS = 3;
+
+// An order is "done" for the month once its date of doing is filled. It's
+// overdue when that's still empty and today is more than OVERDUE_GRACE_DAYS
+// past this month's order day — that's what turns the row red.
+function isOverdue(order: Order): boolean {
+  const day = parseInt(order.orderDay ?? "", 10);
+  if (!day || day < 1 || day > 31) return false;
+  if ((order.dateOfDoing ?? "").trim()) return false; // already done
+
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const lastOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const due = new Date(now.getFullYear(), now.getMonth(), Math.min(day, lastOfMonth));
+  const diffDays = (now.getTime() - due.getTime()) / 86_400_000;
+  return diffDays > OVERDUE_GRACE_DAYS;
+}
+
+// The read-only display node for a cell, with a dash fallback when empty.
+function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
+  if (col.type === "day") {
+    if (!raw) return <span className="text-muted-foreground">—</span>;
+    return (
+      <span className={cn(overdue && "font-semibold text-destructive")}>
+        {displayDay(raw)}
+        {overdue && " · overdue"}
+      </span>
+    );
+  }
+  if (col.type === "date") {
+    return displayDate(raw) || <span className="text-muted-foreground">—</span>;
+  }
+  return raw || <span className="text-muted-foreground">—</span>;
+}
+
 function parseExcel(file: File): Promise<Record<string, string>[]> {
   return file.arrayBuffer().then((buf) => {
     const wb = XLSX.read(buf, { cellDates: true });
@@ -86,7 +131,10 @@ function parseExcel(file: File): Promise<Record<string, string>[]> {
         const field = HEADER_ALIASES[rawKey.toLowerCase().trim()];
         if (!field) continue;
         let val = row[rawKey];
-        if (val instanceof Date) val = toDateStr(val);
+        if (val instanceof Date) {
+          // A spreadsheet date in the "order day" column means the day number.
+          val = field === "orderDay" ? val.getDate() : toDateStr(val);
+        }
         out[field] = String(val ?? "").trim();
       }
       return out;
@@ -342,6 +390,18 @@ export function OrdersBoard() {
                 rows={2}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
               />
+            ) : col.type === "day" ? (
+              <input
+                type="number"
+                min={1}
+                max={31}
+                placeholder="1–31"
+                value={form[col.key]}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, [col.key]: e.target.value }))
+                }
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              />
             ) : (
               <input
                 type={col.type === "date" ? "date" : "text"}
@@ -402,8 +462,10 @@ export function OrdersBoard() {
       ) : (
         <>
           <p className="text-xs text-muted-foreground">
-            Tip: click any editable cell to change it. Company name and order
-            date are fixed.
+            Tip: click any editable cell to change it. Set the order day to the
+            day of the month it&apos;s due — rows turn red when one is more than{" "}
+            {OVERDUE_GRACE_DAYS} days overdue and not yet done. Company name is
+            fixed.
           </p>
           <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
             <table className="w-full text-sm">
@@ -423,11 +485,13 @@ export function OrdersBoard() {
               <tbody>
                 {orders.map((order) => {
                   const busy = busyIds.has(order._id);
+                  const overdue = isOverdue(order);
                   return (
                     <tr
                       key={order._id}
                       className={cn(
                         "border-b border-border/60 last:border-0",
+                        overdue && "bg-destructive/10",
                         busy && "opacity-60",
                       )}
                     >
@@ -459,6 +523,19 @@ export function OrdersBoard() {
                                   onKeyDown={(e) => onCellKeyDown(e, true)}
                                   className="w-full min-w-[12rem] rounded border border-ring bg-background px-2 py-1 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                                 />
+                              ) : col.type === "day" ? (
+                                <input
+                                  autoFocus
+                                  type="number"
+                                  min={1}
+                                  max={31}
+                                  defaultValue={raw}
+                                  onBlur={(e) =>
+                                    onCellBlur(order._id, col.key, e.target.value)
+                                  }
+                                  onKeyDown={(e) => onCellKeyDown(e, false)}
+                                  className="h-8 w-full min-w-[6rem] rounded border border-ring bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                                />
                               ) : (
                                 <input
                                   autoFocus
@@ -479,24 +556,10 @@ export function OrdersBoard() {
                                 className="-mx-1 block w-full rounded px-1 py-0.5 text-left transition-colors hover:bg-muted disabled:cursor-default"
                                 title="Click to edit"
                               >
-                                {col.type === "date" ? (
-                                  displayDate(raw) || (
-                                    <span className="text-muted-foreground">—</span>
-                                  )
-                                ) : raw ? (
-                                  raw
-                                ) : (
-                                  <span className="text-muted-foreground">—</span>
-                                )}
+                                {cellValue(col, raw, overdue)}
                               </button>
-                            ) : col.type === "date" ? (
-                              displayDate(raw) || (
-                                <span className="text-muted-foreground">—</span>
-                              )
                             ) : (
-                              raw || (
-                                <span className="text-muted-foreground">—</span>
-                              )
+                              cellValue(col, raw, overdue)
                             )}
                           </td>
                         );

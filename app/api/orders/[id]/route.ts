@@ -47,7 +47,7 @@ export async function PATCH(
   const order = await Order.findOneAndUpdate(
     { _id: id, ownerId: userId },
     update,
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!order) {

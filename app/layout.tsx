@@ -6,25 +6,38 @@ import { NotchNav } from "@/components/ui/notch-nav";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
+import { canViewDashboard } from "@/lib/access";
 
 type NavIcon = "home";
-
-const navItems: Array<{ value: string; label: string; href: string; icon: NavIcon }> = [
-  { value: "home", label: "Notes", href: "/", icon: "home" },
-  { value: "dashboard", label: "Dashboard", href: "/dashboard", icon: "home" },
-  { value: "orders", label: "Orders", href: "/orders", icon: "home" },
-];
+type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
   title: "nex-bb",
   description: "",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // The Dashboard link only renders for allow-listed admin emails.
+  const showDashboard = await canViewDashboard();
+  const navItems: NavItem[] = [
+    { value: "home", label: "Notes", href: "/", icon: "home" },
+    ...(showDashboard
+      ? [
+          {
+            value: "dashboard",
+            label: "Dashboard",
+            href: "/dashboard",
+            icon: "home",
+          } as NavItem,
+        ]
+      : []),
+    { value: "orders", label: "Orders", href: "/orders", icon: "home" },
+  ];
+
   return (
     <html
       lang="en"
