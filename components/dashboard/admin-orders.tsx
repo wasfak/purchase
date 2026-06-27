@@ -23,7 +23,10 @@ function displayDay(v: string): string {
 // Days between when the order was handled (Date of doing) — or today, if it's
 // still not done — and the day of the month it was due. Positive = late,
 // <= 0 = on time. Returns null when there's no order day to measure against.
-function computeDelayDays(orderDay: string, dateOfDoing: string): number | null {
+function computeDelayDays(
+  orderDay: string,
+  dateOfDoing: string,
+): number | null {
   const day = parseInt(orderDay, 10);
   if (!day || day < 1 || day > 31) return null;
   const ref = dateOfDoing ? new Date(`${dateOfDoing}T00:00:00`) : new Date();
@@ -86,14 +89,13 @@ export function AdminOrders({ orders }: { orders: AdminOrderRow[] }) {
   const [name, setName] = React.useState("");
   const [date, setDate] = React.useState("");
   const [owner, setOwner] = React.useState("all");
-  const [threshold, setThreshold] = React.useState(DEFAULT_LATE_THRESHOLD);
+  const [threshold, setThreshold] = React.useState(() => {
+    if (typeof window === "undefined") return DEFAULT_LATE_THRESHOLD;
 
-  // The boss's "late after N days" setting, remembered in this browser.
-  React.useEffect(() => {
-    const saved = localStorage.getItem(THRESHOLD_KEY);
-    const n = saved === null ? NaN : parseInt(saved, 10);
-    if (!Number.isNaN(n) && n >= 0) setThreshold(n);
-  }, []);
+    const saved = window.localStorage.getItem(THRESHOLD_KEY);
+    const n = saved === null ? NaN : Number.parseInt(saved, 10);
+    return !Number.isNaN(n) && n >= 0 ? n : DEFAULT_LATE_THRESHOLD;
+  });
 
   const updateThreshold = (value: number) => {
     const n = Number.isNaN(value) || value < 0 ? 0 : Math.floor(value);
@@ -163,7 +165,7 @@ export function AdminOrders({ orders }: { orders: AdminOrderRow[] }) {
         <select
           value={owner}
           onChange={(e) => setOwner(e.target.value)}
-          className={cn(inputCls, "max-w-[14rem]")}
+          className={cn(inputCls, "max-w-56")}
           aria-label="Filter by uploader"
         >
           <option value="all">All people</option>
