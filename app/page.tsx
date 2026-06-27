@@ -2,7 +2,7 @@ import { TaskBoard } from "@/components/tasks/task-board";
 
 export default function Page() {
   return (
-    <main className="mx-auto w-full max-w-3xl space-y-5 p-6">
+    <main className="mx-auto w-full max-w-6xl space-y-5 p-6">
       <div className="border-b pb-3">
         <h1 className="text-2xl font-bold tracking-tight">My Tasks</h1>
         <p className="text-sm text-muted-foreground">

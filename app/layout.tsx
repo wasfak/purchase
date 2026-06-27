@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
-import { ThemeProvider, ThemeToggle } from "@/components/theme";
+import { ThemeProvider } from "@/components/theme";
 import { NotchNav } from "@/components/ui/notch-nav";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
@@ -12,8 +12,8 @@ type NavIcon = "home";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
-  title: "nex-bb",
-  description: "",
+  title: "Purchase Optimizer",
+  description: "Optimize your purchase decisions with data-driven insights.",
 };
 
 export default async function RootLayout({

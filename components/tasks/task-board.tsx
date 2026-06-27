@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   CircleCheck,
   CircleDot,
@@ -11,6 +12,8 @@ import {
   Check,
   RotateCcw,
   Loader2,
+  Package,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,6 +31,17 @@ type Task = {
   scheduledDate: string;
   completedAt: string | null;
   order: number;
+  // Set on virtual tasks derived from an order that's due this week.
+  kind?: "order";
+  orderId?: string;
+};
+
+// The bits of an order we need to surface it in the week view.
+type OrderLite = {
+  _id: string;
+  companyName: string;
+  orderDay?: string;
+  dateOfDoing?: string;
 };
 
 type View = "today" | "week" | "all";
@@ -61,10 +75,67 @@ function formatDay(dateStr: string): string {
   });
 }
 
+// Orders recur on a day-of-month (orderDay). Turn any order whose day falls on
+// one of this week's dates into a virtual, read-only task pinned to that day.
+// An order counts as done once its "date of doing" is filled in.
+function ordersToWeekTasks(orders: OrderLite[], days: string[]): Task[] {
+  const dateByDayNum = new Map<number, string>();
+  for (const d of days) dateByDayNum.set(parseInt(d.slice(8, 10), 10), d);
+
+  const out: Task[] = [];
+  for (const o of orders) {
+    const day = parseInt(o.orderDay ?? "", 10);
+    if (!day || day < 1 || day > 31) continue;
+    const date = dateByDayNum.get(day);
+    if (!date) continue;
+    out.push({
+      _id: `order:${o._id}`,
+      title: o.companyName,
+      description: "",
+      status: (o.dateOfDoing ?? "").trim() ? "done" : "todo",
+      scheduledDate: date,
+      completedAt: null,
+      order: 0,
+      kind: "order",
+      orderId: o._id,
+    });
+  }
+  return out;
+}
+
+// Orders for the "today" view: an order is due today when its day-of-month
+// matches today, and carries over (like an unfinished task) when its day this
+// month has already passed and it isn't done yet.
+function ordersToTodayTasks(orders: OrderLite[], today: string): Task[] {
+  const month = today.slice(0, 7); // "YYYY-MM"
+  const out: Task[] = [];
+  for (const o of orders) {
+    const day = parseInt(o.orderDay ?? "", 10);
+    if (!day || day < 1 || day > 31) continue;
+    const due = `${month}-${String(day).padStart(2, "0")}`;
+    const done = (o.dateOfDoing ?? "").trim() !== "";
+    if (due > today) continue; // not due yet this month
+    if (due < today && done) continue; // already past and handled
+    out.push({
+      _id: `order:${o._id}`,
+      title: o.companyName,
+      description: "",
+      status: done ? "done" : "todo",
+      scheduledDate: due,
+      completedAt: null,
+      order: 0,
+      kind: "order",
+      orderId: o._id,
+    });
+  }
+  return out;
+}
+
 export function TaskBoard({ initialView = "today" }: { initialView?: View }) {
   const today = todayStr();
   const [view, setView] = React.useState<View>(initialView);
   const [tasks, setTasks] = React.useState<Task[]>([]);
+  const [orders, setOrders] = React.useState<OrderLite[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   // New-task form state.
@@ -115,6 +186,49 @@ export function TaskBoard({ initialView = "today" }: { initialView?: View }) {
       active = false;
     };
   }, [view]);
+
+  // Orders are independent of the task view, so they're loaded once and reused.
+  // The week view turns any order due this week into a virtual task.
+  const loadOrders = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/orders");
+      if (!res.ok) return;
+      const data = await res.json();
+      setOrders(data.orders ?? []);
+    } catch {
+      // Non-fatal: tasks still render without the order overlay.
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
+
+  // Mark an order's "date of doing" as today, straight from the week board.
+  async function completeOrder(orderId: string) {
+    const key = `order:${orderId}`;
+    setBusy(key, true);
+    // Optimistic: flip it to done locally.
+    setOrders((prev) =>
+      prev.map((o) =>
+        o._id === orderId ? { ...o, dateOfDoing: today } : o,
+      ),
+    );
+    try {
+      const res = await fetch(`/api/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dateOfDoing: today }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success("Order marked as done");
+    } catch {
+      toast.error("Couldn't update order");
+      await loadOrders();
+    } finally {
+      setBusy(key, false);
+    }
+  }
 
   async function addTask(e: React.FormEvent) {
     e.preventDefault();
@@ -258,6 +372,7 @@ export function TaskBoard({ initialView = "today" }: { initialView?: View }) {
       {view === "today" && (
         <TodayList
           tasks={tasks}
+          orders={orders}
           today={today}
           busyIds={busyIds}
           onSetStatus={setStatus}
@@ -265,16 +380,19 @@ export function TaskBoard({ initialView = "today" }: { initialView?: View }) {
             patchTask(t._id, { scheduledDate: today }, "Moved to today")
           }
           onDelete={deleteTask}
+          onCompleteOrder={completeOrder}
         />
       )}
 
       {view === "week" && (
         <WeekList
           tasks={tasks}
+          orders={orders}
           today={today}
           busyIds={busyIds}
           onSetStatus={setStatus}
           onDelete={deleteTask}
+          onCompleteOrder={completeOrder}
         />
       )}
 
@@ -338,25 +456,34 @@ function Stat({
 
 function TodayList({
   tasks,
+  orders,
   today,
   busyIds,
   onSetStatus,
   onMoveToToday,
   onDelete,
+  onCompleteOrder,
 }: {
   tasks: Task[];
+  orders: OrderLite[];
   today: string;
   busyIds: Set<string>;
   onSetStatus: (t: Task, status: TaskStatus) => void;
   onMoveToToday: (t: Task) => void;
   onDelete: (id: string) => void;
+  onCompleteOrder: (orderId: string) => void;
 }) {
-  if (tasks.length === 0) {
+  const orderTasks = React.useMemo(
+    () => ordersToTodayTasks(orders, today),
+    [orders, today],
+  );
+  const items = [...tasks, ...orderTasks];
+  if (items.length === 0) {
     return <EmptyState message="Nothing for today yet. Add your first task above." />;
   }
   return (
     <ul className="space-y-2">
-      {tasks.map((t) => {
+      {items.map((t) => {
         const overdue = t.scheduledDate < today && t.status !== "done";
         return (
           <TaskRow
@@ -365,8 +492,9 @@ function TodayList({
             busy={busyIds.has(t._id)}
             onSetStatus={onSetStatus}
             onDelete={onDelete}
+            onCompleteOrder={onCompleteOrder}
             badge={
-              overdue ? (
+              t.kind !== "order" && overdue ? (
                 <button
                   onClick={() => onMoveToToday(t)}
                   className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/20"
@@ -385,26 +513,35 @@ function TodayList({
 
 function WeekList({
   tasks,
+  orders,
   today,
   busyIds,
   onSetStatus,
   onDelete,
+  onCompleteOrder,
 }: {
   tasks: Task[];
+  orders: OrderLite[];
   today: string;
   busyIds: Set<string>;
   onSetStatus: (t: Task, status: TaskStatus) => void;
   onDelete: (id: string) => void;
+  onCompleteOrder: (orderId: string) => void;
 }) {
   const days = weekDates();
+  const orderTasks = React.useMemo(
+    () => ordersToWeekTasks(orders, days),
+    [orders, days],
+  );
   const byDay = React.useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const d of days) map.set(d, []);
-    for (const t of tasks) {
+    // Real tasks first, then any orders due that day.
+    for (const t of [...tasks, ...orderTasks]) {
       if (map.has(t.scheduledDate)) map.get(t.scheduledDate)!.push(t);
     }
     return map;
-  }, [tasks, days]);
+  }, [tasks, orderTasks, days]);
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -435,6 +572,7 @@ function WeekList({
                     busy={busyIds.has(t._id)}
                     onSetStatus={onSetStatus}
                     onDelete={onDelete}
+                    onCompleteOrder={onCompleteOrder}
                     compact
                   />
                 ))}
@@ -498,6 +636,7 @@ function TaskRow({
   busy,
   onSetStatus,
   onDelete,
+  onCompleteOrder,
   badge,
   compact,
 }: {
@@ -505,9 +644,23 @@ function TaskRow({
   busy?: boolean;
   onSetStatus: (t: Task, status: TaskStatus) => void;
   onDelete: (id: string) => void;
+  onCompleteOrder?: (orderId: string) => void;
   badge?: React.ReactNode;
   compact?: boolean;
 }) {
+  // Orders due this week are surfaced as read-only rows that link back to the
+  // Orders page; they can be completed but not edited or deleted here.
+  if (task.kind === "order") {
+    return (
+      <OrderRow
+        task={task}
+        busy={busy}
+        compact={compact}
+        onCompleteOrder={onCompleteOrder}
+      />
+    );
+  }
+
   const meta = STATUS_META[task.status];
   const Icon = busy ? Loader2 : meta.icon;
   const done = task.status === "done";
@@ -579,7 +732,8 @@ function TaskRow({
             onClick={() => onSetStatus(task, "todo")}
             title="Reopen task"
           >
-            {busy ? <Loader2 className="animate-spin" /> : <RotateCcw />} Reopen
+            {busy ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+            {!compact && "Reopen"}
           </Button>
         ) : (
           <Button
@@ -590,7 +744,7 @@ function TaskRow({
             title="Mark this task as finished"
           >
             {busy ? <Loader2 className="animate-spin" /> : <Check />}
-            {busy ? "Saving…" : "Mark as finished"}
+            {!compact && (busy ? "Saving…" : "Mark as finished")}
           </Button>
         )}
         <button
@@ -603,6 +757,130 @@ function TaskRow({
         >
           <Trash2 className="size-4" />
         </button>
+      </div>
+    </li>
+  );
+}
+
+type OrderUrgency = "done" | "soon" | "overdue" | "later";
+
+// Colour an order by how close today is to its due day:
+//   • due today or within the next 3 days → green ("soon")
+//   • any day after the due day → red ("overdue")
+//   • more than 3 days out → neutral ("later")
+function orderUrgency(dueStr: string, done: boolean): OrderUrgency {
+  if (done) return "done";
+  const days = Math.round(
+    (fromDateStr(dueStr).getTime() - fromDateStr(todayStr()).getTime()) /
+      86_400_000,
+  );
+  if (days < 0) return "overdue";
+  if (days <= 3) return "soon";
+  return "later";
+}
+
+const ORDER_URGENCY_META: Record<
+  OrderUrgency,
+  { icon: string; badge: string; label: string; row: string }
+> = {
+  done: {
+    icon: "text-emerald-500",
+    badge: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    label: "Done",
+    row: "",
+  },
+  soon: {
+    icon: "text-emerald-500",
+    badge: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    label: "Due soon",
+    row: "border-emerald-500/40",
+  },
+  overdue: {
+    icon: "text-destructive",
+    badge: "bg-destructive/10 text-destructive",
+    label: "Overdue",
+    row: "border-destructive/40 bg-destructive/5",
+  },
+  later: {
+    icon: "text-sky-500",
+    badge: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+    label: "Order due",
+    row: "",
+  },
+};
+
+function OrderRow({
+  task,
+  busy,
+  compact,
+  onCompleteOrder,
+}: {
+  task: Task;
+  busy?: boolean;
+  compact?: boolean;
+  onCompleteOrder?: (orderId: string) => void;
+}) {
+  const done = task.status === "done";
+  const meta = ORDER_URGENCY_META[orderUrgency(task.scheduledDate, done)];
+  const Icon = busy ? Loader2 : Package;
+  return (
+    <li
+      className={cn(
+        "flex items-start gap-2 rounded-lg border border-border bg-background p-2.5 transition-opacity",
+        !compact && "shadow-sm",
+        meta.row,
+        busy && "opacity-60",
+      )}
+    >
+      <Icon
+        className={cn(
+          "mt-1 size-5 shrink-0",
+          busy ? "text-muted-foreground animate-spin" : meta.icon,
+        )}
+      />
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn(
+              "text-sm font-medium",
+              done && "text-muted-foreground line-through",
+            )}
+          >
+            {task.title}
+          </span>
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+              meta.badge,
+            )}
+          >
+            {meta.label}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1">
+        {!done && (
+          <Button
+            type="button"
+            size="xs"
+            disabled={busy}
+            onClick={() => task.orderId && onCompleteOrder?.(task.orderId)}
+            title="Mark this order as done"
+          >
+            {busy ? <Loader2 className="animate-spin" /> : <Check />}
+            {!compact && (busy ? "Saving…" : "Mark done")}
+          </Button>
+        )}
+        <Link
+          href="/orders"
+          className="text-muted-foreground/60 transition-colors hover:text-foreground"
+          title="Open in Orders"
+          aria-label="Open in Orders"
+        >
+          <ExternalLink className="size-4" />
+        </Link>
       </div>
     </li>
   );
