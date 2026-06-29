@@ -36,6 +36,7 @@ export default async function RootLayout({
         ]
       : []),
     { value: "orders", label: "Orders", href: "/orders", icon: "home" },
+    { value: "review", label: "Review", href: "/review", icon: "home" },
   ];
 
   return (

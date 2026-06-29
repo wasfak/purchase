@@ -14,6 +14,9 @@ import {
   Loader2,
   Package,
   ExternalLink,
+  Filter,
+  CalendarDays,
+  CalendarOff,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -585,6 +588,9 @@ function WeekList({
   );
 }
 
+type StatusFilter = "all" | "ongoing" | "done";
+type DateFilter = "all" | "with_date" | "without_date";
+
 function AllList({
   tasks,
   today,
@@ -598,36 +604,114 @@ function AllList({
   onSetStatus: (t: Task, status: TaskStatus) => void;
   onDelete: (id: string) => void;
 }) {
+  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all");
+  const [dateFilter, setDateFilter] = React.useState<DateFilter>("all");
+
+  const filtered = React.useMemo(() => {
+    let result = tasks;
+    if (statusFilter === "ongoing") {
+      result = result.filter((t) => t.status === "todo" || t.status === "in_progress");
+    } else if (statusFilter === "done") {
+      result = result.filter((t) => t.status === "done");
+    }
+    if (dateFilter === "with_date") {
+      result = result.filter((t) => t.scheduledDate);
+    } else if (dateFilter === "without_date") {
+      result = result.filter((t) => !t.scheduledDate);
+    }
+    return result;
+  }, [tasks, statusFilter, dateFilter]);
+
   if (tasks.length === 0) {
     return <EmptyState message="No tasks yet. Add your first task above." />;
   }
+
+  const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "ongoing", label: "Ongoing" },
+    { key: "done", label: "Done" },
+  ];
+
+  const DATE_OPTIONS: { key: DateFilter; label: string; icon: React.ElementType }[] = [
+    { key: "all", label: "Any", icon: Filter },
+    { key: "with_date", label: "With date", icon: CalendarDays },
+    { key: "without_date", label: "No date", icon: CalendarOff },
+  ];
+
   return (
-    <ul className="space-y-2">
-      {tasks.map((t) => {
-        const overdue = t.scheduledDate < today && t.status !== "done";
-        return (
-          <TaskRow
-            key={t._id}
-            task={t}
-            busy={busyIds.has(t._id)}
-            onSetStatus={onSetStatus}
-            onDelete={onDelete}
-            badge={
-              <span
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+          {STATUS_OPTIONS.map((o) => (
+            <button
+              key={o.key}
+              type="button"
+              onClick={() => setStatusFilter(o.key)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                statusFilter === o.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+          {DATE_OPTIONS.map((o) => {
+            const Icon = o.icon;
+            return (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => setDateFilter(o.key)}
                 className={cn(
-                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                  overdue
-                    ? "bg-destructive/10 text-destructive"
-                    : "bg-muted text-muted-foreground",
+                  "inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                  dateFilter === o.key
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {formatDay(t.scheduledDate)}
-              </span>
-            }
-          />
-        );
-      })}
-    </ul>
+                <Icon className="size-3" />
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState message="No tasks match the current filters." />
+      ) : (
+        <ul className="space-y-2">
+          {filtered.map((t) => {
+            const overdue = t.scheduledDate < today && t.status !== "done";
+            return (
+              <TaskRow
+                key={t._id}
+                task={t}
+                busy={busyIds.has(t._id)}
+                onSetStatus={onSetStatus}
+                onDelete={onDelete}
+                badge={
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                      overdue
+                        ? "bg-destructive/10 text-destructive"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {formatDay(t.scheduledDate)}
+                  </span>
+                }
+              />
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

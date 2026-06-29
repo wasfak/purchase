@@ -10,7 +10,7 @@ export default function Page() {
           all your tasks.
         </p>
       </div>
-      <TaskBoard initialView="today" />
+      <TaskBoard initialView="all" />
     </main>
   );
 }
