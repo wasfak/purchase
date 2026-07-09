@@ -8,6 +8,7 @@ import {
   Check,
   Circle,
   CircleCheck,
+  Copy,
   EyeOff,
   Filter,
   Search,
@@ -26,6 +27,8 @@ interface DataTableProps {
   columns: string[];
   rows: DataRow[];
   numericColumns?: Set<string>;
+  /** Columns that show a per-row copy button beside their value. */
+  copyableColumns?: Set<string>;
   /** Extra controls on the right of the toolbar. */
   rightToolbar?: React.ReactNode;
   /** If provided, search/filters/sort are persisted to localStorage under this key. */
@@ -76,6 +79,7 @@ export function DataTable({
   columns,
   rows,
   numericColumns,
+  copyableColumns,
   rightToolbar,
   storageKey,
   selection,
@@ -124,6 +128,23 @@ export function DataTable({
   );
   // Set by Escape so the input's blur discards instead of committing.
   const skipCommit = React.useRef(false);
+
+  // The most recently copied cell, so we can flash a check on its button.
+  const [copied, setCopied] = React.useState<string | null>(null);
+  const copyTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyCell = (id: string, col: string, value: string) => {
+    void navigator.clipboard?.writeText(value).then(() => {
+      setCopied(`${id}:${col}`);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(null), 1200);
+    });
+  };
+  React.useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
 
   const commitEdit = (id: string, col: string, value: string) => {
     setEditing(null);
@@ -270,20 +291,13 @@ export function DataTable({
   const activeFilterCount =
     Object.keys(filters).length + (search.trim() ? 1 : 0);
 
-  const fmt = (col: string, v: string) =>
-    v === ""
-      ? "(Blanks)"
-      : numericCols.has(col)
-        ? Number(v).toLocaleString("en-US")
-        : v;
+  const fmt = (v: string) => (v === "" ? "(Blanks)" : v);
 
   const menuValues = React.useMemo(() => {
     if (!menu) return [];
     const q = valSearch.trim().toLowerCase();
     if (!q) return domains[menu.col];
-    return domains[menu.col].filter((v) =>
-      fmt(menu.col, v).toLowerCase().includes(q),
-    );
+    return domains[menu.col].filter((v) => fmt(v).toLowerCase().includes(q));
   }, [menu, valSearch, domains]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const menuAllChecked =
@@ -469,11 +483,18 @@ export function DataTable({
                     const empty = stringify(row[col]) === "";
                     const isEditing =
                       editing?.id === row.__id && editing?.col === col;
+                    const copyable = !!copyableColumns?.has(col) && !empty;
+                    const justCopied = copied === `${row.__id}:${col}`;
+                    const value = empty ? (
+                      <span className="text-muted-foreground/40">—</span>
+                    ) : (
+                      String(row[col])
+                    );
                     return (
                       <td
                         key={col}
                         className={cn(
-                          "px-3 py-2 text-center align-top",
+                          "px-3 py-2 align-top",
                           numeric && "tabular-nums",
                           ignored && "line-through",
                         )}
@@ -502,27 +523,45 @@ export function DataTable({
                             }}
                             className="h-8 w-full min-w-24 rounded-md border border-ring bg-background px-2 text-center text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                           />
-                        ) : onEditCell ? (
-                          <button
-                            type="button"
-                            onClick={() => setEditing({ id: row.__id, col })}
-                            className="-mx-1 block w-full rounded px-1 py-0.5 text-center transition-colors hover:bg-muted/60"
-                            title="Click to edit"
-                          >
-                            {empty ? (
-                              <span className="text-muted-foreground/40">—</span>
-                            ) : numeric ? (
-                              Number(row[col]).toLocaleString("en-US")
-                            ) : (
-                              String(row[col])
-                            )}
-                          </button>
-                        ) : empty ? (
-                          <span className="text-muted-foreground/40">—</span>
-                        ) : numeric ? (
-                          Number(row[col]).toLocaleString("en-US")
                         ) : (
-                          String(row[col])
+                          <div className="flex items-center justify-center gap-1">
+                            {onEditCell ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditing({ id: row.__id, col })
+                                }
+                                className="-mx-1 min-w-0 rounded px-1 py-0.5 text-center transition-colors hover:bg-muted/60"
+                                title="Click to edit"
+                              >
+                                {value}
+                              </button>
+                            ) : (
+                              value
+                            )}
+                            {copyable && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  copyCell(row.__id, col, String(row[col]))
+                                }
+                                className={cn(
+                                  "shrink-0 rounded p-1 no-underline transition-colors",
+                                  justCopied
+                                    ? "text-emerald-600 dark:text-emerald-500"
+                                    : "text-muted-foreground/50 hover:bg-muted hover:text-foreground",
+                                )}
+                                title={justCopied ? "Copied" : "Copy"}
+                                aria-label={`Copy ${col}`}
+                              >
+                                {justCopied ? (
+                                  <Check className="size-3.5" />
+                                ) : (
+                                  <Copy className="size-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
                         )}
                       </td>
                     );
@@ -653,9 +692,9 @@ export function DataTable({
                       "truncate",
                       v === "" && "text-muted-foreground italic",
                     )}
-                    title={fmt(menu.col, v)}
+                    title={fmt(v)}
                   >
-                    {fmt(menu.col, v)}
+                    {fmt(v)}
                   </span>
                 </label>
               );

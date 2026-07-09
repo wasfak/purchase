@@ -89,13 +89,15 @@ export function AdminOrders({ orders }: { orders: AdminOrderRow[] }) {
   const [name, setName] = React.useState("");
   const [date, setDate] = React.useState("");
   const [owner, setOwner] = React.useState("all");
-  const [threshold, setThreshold] = React.useState(() => {
-    if (typeof window === "undefined") return DEFAULT_LATE_THRESHOLD;
+  // Start from the default so the server render and the first client render
+  // agree (avoids a hydration mismatch), then load any saved value after mount.
+  const [threshold, setThreshold] = React.useState(DEFAULT_LATE_THRESHOLD);
 
+  React.useEffect(() => {
     const saved = window.localStorage.getItem(THRESHOLD_KEY);
     const n = saved === null ? NaN : Number.parseInt(saved, 10);
-    return !Number.isNaN(n) && n >= 0 ? n : DEFAULT_LATE_THRESHOLD;
-  });
+    if (!Number.isNaN(n) && n >= 0) setThreshold(n);
+  }, []);
 
   const updateThreshold = (value: number) => {
     const n = Number.isNaN(value) || value < 0 ? 0 : Math.floor(value);

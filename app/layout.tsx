@@ -8,7 +8,7 @@ import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { canViewDashboard } from "@/lib/access";
 
-type NavIcon = "home";
+type NavIcon = "home" | "dashboard" | "orders" | "review" | "contracts";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
@@ -31,12 +31,13 @@ export default async function RootLayout({
             value: "dashboard",
             label: "Dashboard",
             href: "/dashboard",
-            icon: "home",
+            icon: "dashboard",
           } as NavItem,
         ]
       : []),
-    { value: "orders", label: "Orders", href: "/orders", icon: "home" },
-    { value: "review", label: "Review", href: "/review", icon: "home" },
+    { value: "orders", label: "Orders", href: "/orders", icon: "orders" },
+    { value: "review", label: "Review", href: "/review", icon: "review" },
+    { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
   ];
 
   return (

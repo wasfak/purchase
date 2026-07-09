@@ -10,9 +10,11 @@
 import type { Cell } from "@/lib/dataset";
 
 const DB_NAME = "purchase-review";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_META = "datasets"; // lightweight metadata, one record per sheet
 const STORE_ROWS = "rowdata"; // { id, rows } — the heavy row blob, keyed by id
+const STORE_SESSION = "session"; // the current in-progress sheet (single record)
+const SESSION_KEY = "current";
 
 export type SavedRow = {
   /** Cell values aligned to the dataset's `columns`. */
@@ -51,6 +53,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_ROWS)) {
         db.createObjectStore(STORE_ROWS, { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains(STORE_SESSION)) {
+        db.createObjectStore(STORE_SESSION, { keyPath: "id" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -136,6 +141,88 @@ export async function deleteDataset(id: string): Promise<void> {
   const tx = db.transaction([STORE_META, STORE_ROWS], "readwrite");
   tx.objectStore(STORE_META).delete(id);
   tx.objectStore(STORE_ROWS).delete(id);
+  await txDone(tx);
+  db.close();
+}
+
+// The current working sheet, auto-persisted so a page reload (or a dev-server
+// refresh) picks up exactly where the user left off — no re-uploading.
+export type WorkingSession = {
+  fileName: string | null;
+  name: string;
+  columns: string[];
+  rows: Record<string, Cell>[];
+  completed: string[];
+  ignored: string[];
+  currentId: string | null;
+};
+
+export async function saveSession(session: WorkingSession): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_SESSION, "readwrite");
+  tx.objectStore(STORE_SESSION).put({ id: SESSION_KEY, ...session });
+  await txDone(tx);
+  db.close();
+}
+
+export async function loadSession(): Promise<WorkingSession | null> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_SESSION, "readonly");
+  const rec = await reqResult(
+    tx.objectStore(STORE_SESSION).get(SESSION_KEY) as IDBRequest<
+      (WorkingSession & { id: string }) | undefined
+    >,
+  );
+  db.close();
+  if (!rec) return null;
+  const { id: _id, ...session } = rec;
+  return session;
+}
+
+export async function clearSession(): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_SESSION, "readwrite");
+  tx.objectStore(STORE_SESSION).delete(SESSION_KEY);
+  await txDone(tx);
+  db.close();
+}
+
+// A running history of each code's last known status across every sheet, so a
+// newly uploaded sheet can flag codes that were already ordered (done) or
+// skipped (ignored) before. Stored as one record in the session store.
+const CODES_KEY = "codes";
+export type CodeStatus = "done" | "ignored";
+
+type CodesRecord = { id: string; map: Record<string, CodeStatus> };
+
+export async function getCodeStatuses(): Promise<Record<string, CodeStatus>> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_SESSION, "readonly");
+  const rec = await reqResult(
+    tx.objectStore(STORE_SESSION).get(CODES_KEY) as IDBRequest<
+      CodesRecord | undefined
+    >,
+  );
+  db.close();
+  return rec?.map ?? {};
+}
+
+/** Merge status updates into the history; a `null` value removes that code. */
+export async function mergeCodeStatuses(
+  updates: Record<string, CodeStatus | null>,
+): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_SESSION, "readwrite");
+  const store = tx.objectStore(STORE_SESSION);
+  const rec = await reqResult(
+    store.get(CODES_KEY) as IDBRequest<CodesRecord | undefined>,
+  );
+  const map = rec?.map ?? {};
+  for (const [code, status] of Object.entries(updates)) {
+    if (status === null) delete map[code];
+    else map[code] = status;
+  }
+  store.put({ id: CODES_KEY, map });
   await txDone(tx);
   db.close();
 }

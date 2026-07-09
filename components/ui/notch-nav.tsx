@@ -3,14 +3,29 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
-import { Home, Menu, X, CalendarDays } from "lucide-react";
+import {
+  Home,
+  Menu,
+  X,
+  CalendarDays,
+  LayoutDashboard,
+  ShoppingCart,
+  Star,
+  FileText,
+} from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
 import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/nextjs'
 import { ThemeToggle } from "@/components/theme"
 import { AuthActionButton, BrandLogo } from "@/components/ui/amazing-button-component"
 
-type IconName = "home" | "calendar";
+type IconName =
+  | "home"
+  | "calendar"
+  | "dashboard"
+  | "orders"
+  | "review"
+  | "contracts";
 
 type Item = {
   value: string;
@@ -69,6 +84,10 @@ export function NotchNav({
   const iconMap: Record<IconName, LucideIcon> = {
     home: Home,
     calendar: CalendarDays,
+    dashboard: LayoutDashboard,
+    orders: ShoppingCart,
+    review: Star,
+    contracts: FileText,
   };
 
   const updateNotch = React.useCallback(() => {

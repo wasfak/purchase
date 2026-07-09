@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   CircleCheck,
   Clock,
+  Download,
   EyeOff,
   FileSpreadsheet,
   Loader2,
@@ -25,26 +26,66 @@ import {
   type DataRow,
 } from "@/lib/dataset";
 import {
+  clearSession,
   deleteDataset,
+  getCodeStatuses,
   listDatasets,
   loadDataset,
+  loadSession,
+  mergeCodeStatuses,
   saveDataset,
+  saveSession,
+  type CodeStatus,
   type SavedDatasetMeta,
   type SavedRow,
 } from "@/lib/local-store";
 
 type Row = Record<string, Cell>;
 
-// Keep columns that have at least one non-empty cell and aren't xlsx's
-// auto-generated placeholders for unlabeled columns (__EMPTY, __EMPTY_1, …).
+// Only these columns are shown in the review table, in this order. Everything
+// else in the sheet is ignored.
+const VISIBLE_COLUMNS = [
+  "code",
+  "اسم الصنف",
+  "Order",
+  "الموردين",
+  "الرئيسي",
+  "بيع 55يوم",
+];
+
+// Normalize a header for matching: strip whitespace and any invisible
+// bidirectional/formatting marks that spreadsheets sometimes embed.
+const normalizeHeader = (key: string) =>
+  key.replace(/[‎‏‪-‮⁦-⁩]/g, "").trim();
+
+// Given the actual header keys present in a sheet, return the ones we want to
+// show — mapped back to their real key and ordered per VISIBLE_COLUMNS.
+function pickVisibleColumns(allKeys: string[]): string[] {
+  const out: string[] = [];
+  for (const want of VISIBLE_COLUMNS) {
+    const match = allKeys.find(
+      (k) => normalizeHeader(k) === normalizeHeader(want),
+    );
+    if (match) out.push(match);
+  }
+  return out;
+}
+
 function detectColumns(rows: Row[]): string[] {
   const keys = new Set<string>();
   for (const row of rows) for (const k of Object.keys(row)) keys.add(k);
-  return [...keys].filter((key) => {
-    if (/^__EMPTY/.test(key)) return false;
-    return rows.some((row) => stringify(row[key]) !== "");
-  });
+  return pickVisibleColumns([...keys]);
 }
+
+// Canonical form of a code cell for matching across sheets: strip invisible
+// marks/whitespace, and compare purely-numeric codes as numbers so "143354",
+// " 143354 " and "143354.0" all resolve to the same key.
+const normCode = (raw: Cell): string => {
+  const s = normalizeHeader(stringify(raw));
+  if (s === "") return "";
+  const n = Number(s);
+  return Number.isFinite(n) ? String(n) : s;
+};
 
 export function ReviewClient() {
   const [fileName, setFileName] = React.useState<string | null>(null);
@@ -58,11 +99,24 @@ export function ReviewClient() {
   const [loading, setLoading] = React.useState(false);
   const [dragging, setDragging] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  const [hideIgnored, setHideIgnored] = React.useState(false);
+  const [hideDone, setHideDone] = React.useState(false);
 
   // The id of the saved dataset currently open, so re-saving updates it in
   // place instead of creating a duplicate. Null for a fresh, unsaved upload.
   const [currentId, setCurrentId] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState<SavedDatasetMeta[]>([]);
+
+  // Bulk "mark done by pasting codes" panel.
+  const [markOpen, setMarkOpen] = React.useState(false);
+  const [codesText, setCodesText] = React.useState("");
+  const [markResult, setMarkResult] = React.useState<string | null>(null);
+
+  // How many rows the last upload pulled in from the cross-sheet code history.
+  const [carried, setCarried] = React.useState<{
+    done: number;
+    ignored: number;
+  } | null>(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -71,11 +125,34 @@ export function ReviewClient() {
     [rows],
   );
 
+  // Rows shown in the table: optionally drop ignored and/or done rows entirely.
+  const visibleDataRows = React.useMemo(
+    () =>
+      dataRows.filter(
+        (r) =>
+          (!hideIgnored || !ignored.has(r.__id)) &&
+          (!hideDone || !completed.has(r.__id)),
+      ),
+    [dataRows, hideIgnored, hideDone, ignored, completed],
+  );
+
   const numericCols = React.useMemo(() => {
     const set = new Set<string>();
     for (const c of columns) if (isNumericColumn(dataRows, c)) set.add(c);
     return set;
   }, [dataRows, columns]);
+
+  // Columns that get a per-row copy button next to their value.
+  const copyableCols = React.useMemo(() => {
+    const want = ["code", "اسم الصنف"].map(normalizeHeader);
+    return new Set(columns.filter((c) => want.includes(normalizeHeader(c))));
+  }, [columns]);
+
+  // The actual header key for the code column, if present.
+  const codeCol = React.useMemo(
+    () => columns.find((c) => normalizeHeader(c) === "code"),
+    [columns],
+  );
 
   const refreshSaved = React.useCallback(async () => {
     try {
@@ -100,6 +177,76 @@ export function ReviewClient() {
     };
   }, []);
 
+  // Restore the last working sheet on mount, then keep it persisted so a reload
+  // never loses the current session. `hydrated` gates the save effect so we
+  // don't clobber the stored session before we've read it.
+  const [hydrated, setHydrated] = React.useState(false);
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const session = await loadSession();
+        if (active && session && session.columns.length > 0) {
+          setFileName(session.fileName);
+          setName(session.name);
+          setColumns(session.columns);
+          setRows(session.rows);
+          setCompleted(new Set(session.completed));
+          setIgnored(new Set(session.ignored));
+          setCurrentId(session.currentId);
+        }
+      } catch {
+        // Ignore — a missing/unreadable session just starts empty.
+      } finally {
+        if (active) setHydrated(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!hydrated) return;
+    const handle = setTimeout(() => {
+      if (columns.length === 0) {
+        void clearSession().catch(() => {});
+        return;
+      }
+      void saveSession({
+        fileName,
+        name,
+        columns,
+        rows,
+        completed: [...completed],
+        ignored: [...ignored],
+        currentId,
+      }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [hydrated, fileName, name, columns, rows, completed, ignored, currentId]);
+
+  // Keep the cross-sheet code history in sync with the current sheet: the sheet
+  // is authoritative for the codes it contains (done / ignored / neither).
+  React.useEffect(() => {
+    if (!hydrated || !codeCol || rows.length === 0) return;
+    const handle = setTimeout(() => {
+      const updates: Record<string, CodeStatus | null> = {};
+      rows.forEach((r, i) => {
+        const code = normCode(r[codeCol]);
+        if (!code) return;
+        const id = String(i);
+        updates[code] = completed.has(id)
+          ? "done"
+          : ignored.has(id)
+            ? "ignored"
+            : null;
+      });
+      void mergeCodeStatuses(updates).catch(() => {});
+    }, 500);
+    return () => clearTimeout(handle);
+  }, [hydrated, codeCol, rows, completed, ignored]);
+
   const parseFile = React.useCallback(async (file: File) => {
     setLoading(true);
     setError(null);
@@ -113,14 +260,39 @@ export function ReviewClient() {
         setError("The sheet appears to be empty.");
         setRows([]);
         setColumns([]);
+        setCompleted(new Set());
+        setIgnored(new Set());
       } else {
+        const cols = detectColumns(data);
+
+        // Carry over done/ignored status from earlier sheets by code, so we
+        // don't re-order something already handled.
+        const codeKey = cols.find((c) => normalizeHeader(c) === "code");
+        const carriedDone = new Set<string>();
+        const carriedIgnored = new Set<string>();
+        if (codeKey) {
+          const history = await getCodeStatuses();
+          data.forEach((r, i) => {
+            const status = history[normCode(r[codeKey])];
+            if (status === "done") carriedDone.add(String(i));
+            else if (status === "ignored") carriedIgnored.add(String(i));
+          });
+        }
+
         setRows(data);
-        setColumns(detectColumns(data));
+        setColumns(cols);
+        setCompleted(carriedDone);
+        setIgnored(carriedIgnored);
+        setCarried({ done: carriedDone.size, ignored: carriedIgnored.size });
+
+        if (carriedDone.size + carriedIgnored.size > 0) {
+          toast.info(
+            `${carriedDone.size} already done and ${carriedIgnored.size} ignored were carried over from previous sheets.`,
+          );
+        }
       }
       setFileName(file.name);
       setName(file.name.replace(/\.[^.]+$/, ""));
-      setCompleted(new Set());
-      setIgnored(new Set());
       setSelected(new Set());
       setCurrentId(null); // a freshly uploaded sheet is unsaved
     } catch (e) {
@@ -229,6 +401,100 @@ export function ReviewClient() {
     }
   };
 
+  // Export the current sheet to .xlsx — with all edits applied, ignored rows
+  // dropped, and the الرئيسي / بيع 55يوم columns left out.
+  const exportExcel = () => {
+    const exclude = ["الرئيسي", "بيع 55يوم"].map(normalizeHeader);
+    const exportCols = columns.filter(
+      (c) => !exclude.includes(normalizeHeader(c)),
+    );
+    const data = rows
+      .filter((_, i) => !ignored.has(String(i)))
+      .map((r) => {
+        const obj: Record<string, Cell> = {};
+        for (const c of exportCols) obj[c] = r[c] ?? null;
+        return obj;
+      });
+
+    if (data.length === 0) {
+      toast.error("No rows to export.");
+      return;
+    }
+
+    const ws = XLSX.utils.json_to_sheet(data, { header: exportCols });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const base =
+      (name.trim() || fileName || "export").replace(/\.[^.]+$/, "") || "export";
+    XLSX.writeFile(wb, `${base}.xlsx`);
+    toast.success(`Exported ${data.length} rows`);
+  };
+
+  // Mark every row whose code appears in the pasted list as done. Codes may be
+  // separated by newlines, spaces, commas, semicolons, or tabs. Matching is
+  // lenient: invisible marks are stripped and purely-numeric codes are compared
+  // as numbers, so "143354", " 143354 " and "143354.0" all match.
+  const markDoneByCodes = () => {
+    if (!codeCol) {
+      toast.error("This sheet has no code column.");
+      return;
+    }
+
+    const wantedList = codesText
+      .split(/[\s,;]+/)
+      .map((s) => normCode(s))
+      .filter(Boolean);
+    const wanted = new Set(wantedList);
+    if (wanted.size === 0) {
+      toast.error("Paste some codes first.");
+      return;
+    }
+
+    const ids: string[] = [];
+    const matchedCodes = new Set<string>();
+    rows.forEach((r, i) => {
+      const code = normCode(r[codeCol]);
+      if (code && wanted.has(code)) {
+        ids.push(String(i));
+        matchedCodes.add(code);
+      }
+    });
+
+    if (ids.length === 0) {
+      // Show a few real codes from the sheet so a mismatch is obvious.
+      const sample = rows
+        .map((r) => normCode(r[codeCol]))
+        .filter(Boolean)
+        .slice(0, 5);
+      setMarkResult(
+        `No rows matched. You pasted e.g. [${[...wanted]
+          .slice(0, 5)
+          .join(", ")}], but the sheet's codes look like [${sample.join(
+          ", ",
+        )}].`,
+      );
+      toast.error("No rows matched those codes.");
+      return;
+    }
+
+    setCompleted((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+
+    const missing = [...wanted].filter((c) => !matchedCodes.has(c));
+    const msg =
+      missing.length > 0
+        ? `Marked ${ids.length} rows done. ${missing.length} not found: ${missing
+            .slice(0, 10)
+            .join(", ")}${missing.length > 10 ? "…" : ""}`
+        : `Marked ${ids.length} rows done.`;
+    setMarkResult(msg);
+    toast.success(msg);
+    setCodesText("");
+  };
+
   const openSaved = async (id: string) => {
     setLoading(true);
     setError(null);
@@ -239,7 +505,7 @@ export function ReviewClient() {
         await refreshSaved();
         return;
       }
-      setColumns(ds.columns);
+      setColumns(pickVisibleColumns(ds.columns));
       setRows(
         ds.rows.map((sr) =>
           Object.fromEntries(ds.columns.map((c, ci) => [c, sr.values[ci] ?? null])),
@@ -255,6 +521,7 @@ export function ReviewClient() {
       setFileName(ds.fileName);
       setName(ds.name);
       setCurrentId(ds.id);
+      setCarried(null);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that sheet");
     } finally {
@@ -283,6 +550,7 @@ export function ReviewClient() {
     setName("");
     setError(null);
     setCurrentId(null);
+    setCarried(null);
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -395,6 +663,28 @@ export function ReviewClient() {
 
       {hasData && (
         <>
+          {carried && carried.done + carried.ignored > 0 && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-sm">
+              <span className="font-medium">
+                🔗 Linked to your history
+              </span>
+              <span className="text-muted-foreground">
+                {carried.done} already ordered · {carried.ignored} ignored —
+                carried over from previous sheets.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setHideIgnored(true);
+                  setHideDone(true);
+                }}
+                className="ml-auto rounded-md px-2 py-1 font-medium text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-400"
+              >
+                Show only new items
+              </button>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
             <input
               value={name}
@@ -405,11 +695,79 @@ export function ReviewClient() {
             <span className="px-1 text-sm text-muted-foreground">
               {completedCount} done · {ignored.size} ignored · {rows.length} rows
             </span>
+            {ignored.size > 0 && (
+              <Button
+                variant={hideIgnored ? "default" : "outline"}
+                onClick={() => setHideIgnored((v) => !v)}
+              >
+                <EyeOff />
+                {hideIgnored ? "Show ignored" : "Hide ignored"}
+              </Button>
+            )}
+            {completedCount > 0 && (
+              <Button
+                variant={hideDone ? "default" : "outline"}
+                onClick={() => setHideDone((v) => !v)}
+              >
+                <EyeOff />
+                {hideDone ? "Show done" : "Hide done"}
+              </Button>
+            )}
+            {codeCol && (
+              <Button
+                variant={markOpen ? "default" : "outline"}
+                onClick={() => setMarkOpen((v) => !v)}
+              >
+                <CircleCheck /> Mark done by codes
+              </Button>
+            )}
+            <Button variant="outline" onClick={exportExcel}>
+              <Download /> Export Excel
+            </Button>
             <Button onClick={save} disabled={saving}>
               {saving ? <Loader2 className="animate-spin" /> : <Save />}
               {currentId ? "Update saved" : "Save to PC"}
             </Button>
           </div>
+
+          {markOpen && codeCol && (
+            <div className="flex flex-col gap-2 rounded-xl border border-primary/40 bg-primary/5 p-3 text-sm">
+              <label className="font-medium">
+                Paste codes to mark done
+                <span className="ml-2 font-normal text-muted-foreground">
+                  (separated by spaces, commas, or new lines)
+                </span>
+              </label>
+              <textarea
+                value={codesText}
+                onChange={(e) => setCodesText(e.target.value)}
+                placeholder={"143354\n143445\n135247"}
+                rows={4}
+                className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={markDoneByCodes}>
+                  <CircleCheck /> Mark done
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setCodesText("");
+                    setMarkResult(null);
+                    setMarkOpen(false);
+                  }}
+                >
+                  <X /> Close
+                </Button>
+              </div>
+              {markResult && (
+                <p className="rounded-lg bg-background px-3 py-2 text-sm text-muted-foreground">
+                  {markResult}
+                </p>
+              )}
+            </div>
+          )}
 
           {selected.size > 0 && (
             <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 p-2 text-sm">
@@ -443,8 +801,9 @@ export function ReviewClient() {
             // previous sheet can't carry over and hide rows.
             key={columns.join("|")}
             columns={columns}
-            rows={dataRows}
+            rows={visibleDataRows}
             numericColumns={numericCols}
+            copyableColumns={copyableCols}
             selection={{
               isSelected: (id) => selected.has(id),
               onToggle: toggleSelect,
