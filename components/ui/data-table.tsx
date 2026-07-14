@@ -51,6 +51,12 @@ interface DataTableProps {
   };
   /** When provided, any cell becomes click-to-edit. */
   onEditCell?: (id: string, col: string, value: string) => void;
+  /**
+   * Custom renderer for specific cells. When it returns a node, that node is
+   * shown instead of the default cell (and inline editing / copy are skipped
+   * for that cell). Return `undefined` to fall back to the default rendering.
+   */
+  renderCell?: (row: DataRow, col: string) => React.ReactNode | undefined;
 }
 
 type SavedState = {
@@ -86,6 +92,7 @@ export function DataTable({
   completion,
   ignorable,
   onEditCell,
+  renderCell,
 }: DataTableProps) {
   const saved = React.useMemo(
     () => (storageKey ? loadTableState(storageKey) : null),
@@ -485,11 +492,25 @@ export function DataTable({
                       editing?.id === row.__id && editing?.col === col;
                     const copyable = !!copyableColumns?.has(col) && !empty;
                     const justCopied = copied === `${row.__id}:${col}`;
+                    const custom = renderCell?.(row, col);
                     const value = empty ? (
                       <span className="text-muted-foreground/40">—</span>
                     ) : (
                       String(row[col])
                     );
+                    if (custom !== undefined) {
+                      return (
+                        <td
+                          key={col}
+                          className={cn(
+                            "px-3 py-2 text-center align-top",
+                            numeric && "tabular-nums",
+                          )}
+                        >
+                          {custom}
+                        </td>
+                      );
+                    }
                     return (
                       <td
                         key={col}

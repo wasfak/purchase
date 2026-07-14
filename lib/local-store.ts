@@ -23,6 +23,10 @@ export type SavedRow = {
   completed: boolean;
   /** Whether the user marked this row ignored (struck through / dimmed). */
   ignored?: boolean;
+  /** Epoch ms of when this row was marked done/ignored, if it was. */
+  statusAt?: number;
+  /** User-picked category for this row (pharma / sena / sherktha). */
+  category?: string;
 };
 
 export type SavedDatasetMeta = {
@@ -155,6 +159,10 @@ export type WorkingSession = {
   completed: string[];
   ignored: string[];
   currentId: string | null;
+  /** Per-row-id epoch ms of when it was marked done/ignored. */
+  statusAt?: [string, number][];
+  /** Per-row-id category pick (pharma / sena / sherktha). */
+  category?: [string, string][];
 };
 
 export async function saveSession(session: WorkingSession): Promise<void> {
@@ -187,15 +195,33 @@ export async function clearSession(): Promise<void> {
   db.close();
 }
 
-// A running history of each code's last known status across every sheet, so a
-// newly uploaded sheet can flag codes that were already ordered (done) or
-// skipped (ignored) before. Stored as one record in the session store.
+// A running history of each code across every sheet, so a newly uploaded sheet
+// can flag codes that were already ordered (done) or skipped (ignored) before,
+// remember WHEN that happened, and carry over the code's category. Stored as one
+// record in the session store.
 const CODES_KEY = "codes";
 export type CodeStatus = "done" | "ignored";
 
-type CodesRecord = { id: string; map: Record<string, CodeStatus> };
+/** What we remember about one code across sheets. */
+export type CodeMeta = {
+  status?: CodeStatus;
+  /** Epoch ms of when the status was first set. */
+  at?: number;
+  /** The code's category (pharma / sena / sherktha). */
+  category?: string;
+};
 
-export async function getCodeStatuses(): Promise<Record<string, CodeStatus>> {
+// Older records stored the bare status string per code; newer ones store a
+// CodeMeta object. Accept both on read.
+type StoredCode = CodeStatus | CodeMeta;
+type CodesRecord = { id: string; map: Record<string, StoredCode> };
+
+const normalizeMeta = (v: StoredCode | undefined): CodeMeta =>
+  v == null ? {} : typeof v === "string" ? { status: v } : v;
+
+const isEmptyMeta = (m: CodeMeta) => !m.status && !m.category;
+
+export async function getCodeStatuses(): Promise<Record<string, CodeMeta>> {
   const db = await openDB();
   const tx = db.transaction(STORE_SESSION, "readonly");
   const rec = await reqResult(
@@ -204,12 +230,20 @@ export async function getCodeStatuses(): Promise<Record<string, CodeStatus>> {
     >,
   );
   db.close();
-  return rec?.map ?? {};
+  const out: Record<string, CodeMeta> = {};
+  for (const [code, v] of Object.entries(rec?.map ?? {})) {
+    out[code] = normalizeMeta(v);
+  }
+  return out;
 }
 
-/** Merge status updates into the history; a `null` value removes that code. */
+/**
+ * Merge per-code updates into the history. Each update is field-merged onto the
+ * existing entry; passing `null`, or an entry that ends up with neither a status
+ * nor a category, removes that code.
+ */
 export async function mergeCodeStatuses(
-  updates: Record<string, CodeStatus | null>,
+  updates: Record<string, CodeMeta | null>,
 ): Promise<void> {
   const db = await openDB();
   const tx = db.transaction(STORE_SESSION, "readwrite");
@@ -218,9 +252,14 @@ export async function mergeCodeStatuses(
     store.get(CODES_KEY) as IDBRequest<CodesRecord | undefined>,
   );
   const map = rec?.map ?? {};
-  for (const [code, status] of Object.entries(updates)) {
-    if (status === null) delete map[code];
-    else map[code] = status;
+  for (const [code, update] of Object.entries(updates)) {
+    if (update === null) {
+      delete map[code];
+      continue;
+    }
+    const merged: CodeMeta = { ...normalizeMeta(map[code]), ...update };
+    if (isEmptyMeta(merged)) delete map[code];
+    else map[code] = merged;
   }
   store.put({ id: CODES_KEY, map });
   await txDone(tx);

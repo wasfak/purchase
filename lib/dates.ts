@@ -27,6 +27,21 @@ export function todayStr(): string {
   return toDateStr(new Date());
 }
 
+/** A month as a "YYYY-MM" string (defaults to the current month). */
+export function currentMonthStr(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** A readable month label like "May 2026" for a "YYYY-MM" string. */
+export function monthLabel(m: string): string {
+  if (!/^\d{4}-\d{2}$/.test(m)) return m;
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(y, mo - 1, 1).toLocaleString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+}
+
 export function isValidDateStr(s: unknown): s is string {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }

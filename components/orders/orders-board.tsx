@@ -2,12 +2,12 @@
 
 import * as React from "react";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { toDateStr } from "@/lib/dates";
+import { toDateStr, currentMonthStr, monthLabel } from "@/lib/dates";
 
 type FieldType = "text" | "date" | "textarea" | "day";
 
@@ -22,7 +22,7 @@ const COLUMNS: Column[] = [
   { key: "toWhere", label: "To where", type: "text" },
   { key: "exp", label: "Expired items", type: "textarea" },
   { key: "damaged", label: "Damaged", type: "textarea" },
-  { key: "finished", label: "Finished", type: "textarea" },
+  { key: "finished", label: "Finished", type: "date" },
   { key: "notes", label: "Order notes", type: "textarea" },
 ];
 
@@ -99,6 +99,12 @@ function isOverdue(order: Order): boolean {
   return diffDays > OVERDUE_GRACE_DAYS;
 }
 
+// An order is done once its date of doing is filled — that's what turns the row
+// green, so finished orders stand apart from the ones still to do.
+function isDone(order: Order): boolean {
+  return (order.dateOfDoing ?? "").trim() !== "";
+}
+
 // The read-only display node for a cell, with a dash fallback when empty.
 function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
   if (col.type === "day") {
@@ -157,6 +163,59 @@ export function OrdersBoard() {
   } | null>(null);
   const skipBlur = React.useRef(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
+
+  // Which monthly cycle is being viewed. New orders and imports are tagged with
+  // this month, and the table only shows this month's rows. Persisted so a
+  // reload keeps you on the same month. Safe to read localStorage in the
+  // initializer: `month` isn't rendered until after the loading state, so it
+  // can't cause a hydration mismatch.
+  const [month, setMonth] = React.useState<string>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("orders:month");
+        if (saved && /^\d{4}-\d{2}$/.test(saved)) return saved;
+      } catch {
+        // localStorage unavailable — fall through to the current month.
+      }
+    }
+    return currentMonthStr();
+  });
+  const [carrying, setCarrying] = React.useState(false);
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem("orders:month", month);
+    } catch {
+      // Ignore — persistence is best-effort.
+    }
+  }, [month]);
+
+  // Orders created before months existed have an empty month; treat those as
+  // belonging to the current month so nothing silently disappears.
+  const thisMonth = React.useMemo(() => currentMonthStr(), []);
+  const effectiveMonth = React.useCallback(
+    (o: Order) => (o.month?.trim() ? o.month.trim() : thisMonth),
+    [thisMonth],
+  );
+
+  // Only the selected month's rows are shown in the table.
+  const visibleOrders = React.useMemo(
+    () => orders.filter((o) => effectiveMonth(o) === month),
+    [orders, effectiveMonth, month],
+  );
+
+  // The newest month (other than the one selected) that actually has orders —
+  // the source we offer to carry companies over from into a fresh month.
+  const carrySourceMonth = React.useMemo(() => {
+    const months = [
+      ...new Set(
+        orders
+          .map(effectiveMonth)
+          .filter((m) => m !== month),
+      ),
+    ].sort();
+    return months.length ? months[months.length - 1] : null;
+  }, [orders, effectiveMonth, month]);
 
   const setBusy = (id: string, on: boolean) =>
     setBusyIds((prev) => {
@@ -217,7 +276,7 @@ export function OrdersBoard() {
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, month }),
       });
       if (!res.ok) throw new Error();
       closeForm();
@@ -236,7 +295,10 @@ export function OrdersBoard() {
     setImporting(true);
     try {
       const parsed = await parseExcel(file);
-      const valid = parsed.filter((o) => o.companyName);
+      const valid = parsed
+        .filter((o) => o.companyName)
+        // Tag every imported row with the month currently being viewed.
+        .map((o) => ({ ...o, month }));
       if (valid.length === 0) {
         toast.error("No rows with a company name were found in that file");
         return;
@@ -249,12 +311,61 @@ export function OrdersBoard() {
       if (!res.ok) throw new Error();
       const data = await res.json();
       await load();
-      toast.success(`Imported ${data.count} order(s)`);
+      toast.success(`Imported ${data.count} order(s) into ${monthLabel(month)}`);
     } catch {
       toast.error("Couldn't import that file");
     } finally {
       setImporting(false);
       if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  // Start the selected month fresh: copy each company (and its order day) from
+  // the most recent earlier month, with all the per-month fields cleared.
+  // Companies already present in this month are skipped, so it's safe to re-run.
+  async function carryOver() {
+    if (!carrySourceMonth) return;
+    const already = new Set(
+      visibleOrders.map((o) => o.companyName.trim().toLowerCase()),
+    );
+    const seen = new Set<string>();
+    const toCreate: Record<string, string>[] = [];
+    for (const o of orders) {
+      if (effectiveMonth(o) !== carrySourceMonth) continue;
+      const key = o.companyName.trim().toLowerCase();
+      if (!key || already.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      toCreate.push({
+        companyName: o.companyName,
+        orderDay: o.orderDay ?? "",
+        month,
+      });
+    }
+
+    if (toCreate.length === 0) {
+      toast.info(
+        `Every company from ${monthLabel(carrySourceMonth)} is already in ${monthLabel(month)}.`,
+      );
+      return;
+    }
+
+    setCarrying(true);
+    try {
+      const res = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orders: toCreate }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      await load();
+      toast.success(
+        `Carried over ${data.count} order(s) into ${monthLabel(month)}`,
+      );
+    } catch {
+      toast.error("Couldn't carry over orders");
+    } finally {
+      setCarrying(false);
     }
   }
 
@@ -353,6 +464,38 @@ export function OrdersBoard() {
     </div>
   );
 
+  const monthBar = (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
+      <label className="flex items-center gap-2 text-sm font-medium">
+        <Calendar className="size-4 text-muted-foreground" />
+        Month
+        <input
+          type="month"
+          value={month}
+          onChange={(e) => setMonth(e.target.value || currentMonthStr())}
+          className="h-9 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+        />
+      </label>
+      <span className="px-1 text-sm text-muted-foreground">
+        {visibleOrders.length} order{visibleOrders.length === 1 ? "" : "s"} in{" "}
+        {monthLabel(month)}
+      </span>
+      {carrySourceMonth && (
+        <Button
+          type="button"
+          variant="outline"
+          className="ml-auto"
+          disabled={carrying}
+          onClick={carryOver}
+          title={`Copy companies from ${monthLabel(carrySourceMonth)} into ${monthLabel(month)}, with a clean sheet`}
+        >
+          {carrying ? <Loader2 className="animate-spin" /> : <CopyPlus />}
+          Carry over from {monthLabel(carrySourceMonth)}
+        </Button>
+      )}
+    </div>
+  );
+
   const formPanel = showForm && (
     <form
       onSubmit={submit}
@@ -439,16 +582,27 @@ export function OrdersBoard() {
   return (
     <div className="space-y-4">
       {toolbar}
+      {monthBar}
       {formPanel}
 
-      {orders.length === 0 ? (
+      {visibleOrders.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-card/50 p-10 text-center">
           <p className="text-sm text-muted-foreground">
-            You don&apos;t have any orders yet.
+            No orders in {monthLabel(month)} yet.
           </p>
-          <div className="mt-4 flex justify-center gap-2">
-            <Button type="button" onClick={openAdd}>
-              <Plus /> Add your first order
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            {carrySourceMonth && (
+              <Button type="button" disabled={carrying} onClick={carryOver}>
+                {carrying ? <Loader2 className="animate-spin" /> : <CopyPlus />}
+                Carry over from {monthLabel(carrySourceMonth)}
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant={carrySourceMonth ? "outline" : "default"}
+              onClick={openAdd}
+            >
+              <Plus /> Add an order
             </Button>
             <Button
               type="button"
@@ -464,8 +618,10 @@ export function OrdersBoard() {
           <p className="text-xs text-muted-foreground">
             Tip: click any editable cell to change it. Set the order day to the
             day of the month it&apos;s due — rows turn red when one is more than{" "}
-            {OVERDUE_GRACE_DAYS} days overdue and not yet done. Company name is
-            fixed.
+            {OVERDUE_GRACE_DAYS} days overdue and not yet done, and green once you
+            fill in its date of doing. Company name is fixed. Switch months above
+            to review a past month or start a new one — &ldquo;Carry over&rdquo;
+            copies the companies into a clean sheet.
           </p>
           <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
             <table className="w-full text-sm">
@@ -483,14 +639,17 @@ export function OrdersBoard() {
                 </tr>
               </thead>
               <tbody>
-                {orders.map((order) => {
+                {visibleOrders.map((order) => {
                   const busy = busyIds.has(order._id);
                   const overdue = isOverdue(order);
+                  const done = isDone(order);
                   return (
                     <tr
                       key={order._id}
                       className={cn(
                         "border-b border-border/60 last:border-0",
+                        done &&
+                          "bg-emerald-500/10 hover:bg-emerald-500/15 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/15",
                         overdue && "bg-destructive/10",
                         busy && "opacity-60",
                       )}

@@ -17,6 +17,10 @@ const OrderSchema = new Schema(
 
     companyName: { type: String, required: true, trim: true },
 
+    // Which monthly cycle this order belongs to, as "YYYY-MM". Each month the
+    // orders are redone, so a company has one order row per month.
+    month: { type: String, default: "", index: true },
+
     // Recurring day of the month (1–31, stored as a string) this order is due.
     orderDay: { type: String, default: "" },
 
@@ -48,6 +52,7 @@ export const Order = models.Order || model("Order", OrderSchema);
 // The editable text fields, shared between the API and the Excel importer.
 export const ORDER_TEXT_FIELDS = [
   "companyName",
+  "month",
   "orderDay",
   "dateOfDoing",
   "inReview",

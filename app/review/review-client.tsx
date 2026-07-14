@@ -35,12 +35,24 @@ import {
   mergeCodeStatuses,
   saveDataset,
   saveSession,
-  type CodeStatus,
+  type CodeMeta,
   type SavedDatasetMeta,
   type SavedRow,
 } from "@/lib/local-store";
 
 type Row = Record<string, Cell>;
+
+// App-managed columns appended after the sheet's own columns in the table.
+const MARKED_COL = "Status date"; // when the row was marked done/ignored
+const CATEGORY_COL = "Category"; // pharma / sena / sherktha
+const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha"] as const;
+
+// Local date as YYYY-MM-DD — human-readable and sorts/filters correctly as text.
+const formatDate = (ms: number): string => {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
 // Only these columns are shown in the review table, in this order. Everything
 // else in the sheet is ignored.
@@ -94,6 +106,13 @@ export function ReviewClient() {
   const [completed, setCompleted] = React.useState<Set<string>>(new Set());
   const [ignored, setIgnored] = React.useState<Set<string>>(new Set());
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  // Per-row-id epoch ms of when it was marked done/ignored, and its category.
+  const [statusAt, setStatusAt] = React.useState<Map<string, number>>(
+    () => new Map(),
+  );
+  const [category, setCategory] = React.useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [name, setName] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -134,6 +153,29 @@ export function ReviewClient() {
           (!hideDone || !completed.has(r.__id)),
       ),
     [dataRows, hideIgnored, hideDone, ignored, completed],
+  );
+
+  // Columns actually rendered by the table: the sheet's columns plus our two
+  // app-managed ones (mark date + category). Kept separate from `columns` so
+  // export / save / code-history logic still only see the sheet's own columns.
+  const tableColumns = React.useMemo(
+    () => [...columns, MARKED_COL, CATEGORY_COL],
+    [columns],
+  );
+
+  // Inject the mark date (formatted YYYY-MM-DD so it sorts correctly) and the
+  // category into each row so the table can filter/sort/search on them.
+  const tableRows = React.useMemo(
+    () =>
+      visibleDataRows.map((r) => {
+        const at = statusAt.get(r.__id);
+        return {
+          ...r,
+          [MARKED_COL]: at ? formatDate(at) : "",
+          [CATEGORY_COL]: category.get(r.__id) ?? "",
+        };
+      }),
+    [visibleDataRows, statusAt, category],
   );
 
   const numericCols = React.useMemo(() => {
@@ -193,6 +235,8 @@ export function ReviewClient() {
           setRows(session.rows);
           setCompleted(new Set(session.completed));
           setIgnored(new Set(session.ignored));
+          setStatusAt(new Map(session.statusAt ?? []));
+          setCategory(new Map(session.category ?? []));
           setCurrentId(session.currentId);
         }
       } catch {
@@ -220,32 +264,52 @@ export function ReviewClient() {
         rows,
         completed: [...completed],
         ignored: [...ignored],
+        statusAt: [...statusAt],
+        category: [...category],
         currentId,
       }).catch(() => {});
     }, 400);
     return () => clearTimeout(handle);
-  }, [hydrated, fileName, name, columns, rows, completed, ignored, currentId]);
+  }, [
+    hydrated,
+    fileName,
+    name,
+    columns,
+    rows,
+    completed,
+    ignored,
+    statusAt,
+    category,
+    currentId,
+  ]);
+
 
   // Keep the cross-sheet code history in sync with the current sheet: the sheet
-  // is authoritative for the codes it contains (done / ignored / neither).
+  // is authoritative for the codes it contains — their status, the date it was
+  // set, and the category all carry forward to the next sheet by code.
   React.useEffect(() => {
     if (!hydrated || !codeCol || rows.length === 0) return;
     const handle = setTimeout(() => {
-      const updates: Record<string, CodeStatus | null> = {};
+      const updates: Record<string, CodeMeta | null> = {};
       rows.forEach((r, i) => {
         const code = normCode(r[codeCol]);
         if (!code) return;
         const id = String(i);
-        updates[code] = completed.has(id)
+        const status = completed.has(id)
           ? "done"
           : ignored.has(id)
             ? "ignored"
-            : null;
+            : undefined;
+        const cat = category.get(id) || undefined;
+        updates[code] =
+          !status && !cat
+            ? null
+            : { status, at: status ? statusAt.get(id) : undefined, category: cat };
       });
       void mergeCodeStatuses(updates).catch(() => {});
     }, 500);
     return () => clearTimeout(handle);
-  }, [hydrated, codeCol, rows, completed, ignored]);
+  }, [hydrated, codeCol, rows, completed, ignored, statusAt, category]);
 
   const parseFile = React.useCallback(async (file: File) => {
     setLoading(true);
@@ -262,20 +326,29 @@ export function ReviewClient() {
         setColumns([]);
         setCompleted(new Set());
         setIgnored(new Set());
+        setStatusAt(new Map());
+        setCategory(new Map());
       } else {
         const cols = detectColumns(data);
 
-        // Carry over done/ignored status from earlier sheets by code, so we
-        // don't re-order something already handled.
+        // Carry over done/ignored status, the date it was set, and the category
+        // from earlier sheets by code, so we don't re-order something already
+        // handled and can see when it was decided.
         const codeKey = cols.find((c) => normalizeHeader(c) === "code");
         const carriedDone = new Set<string>();
         const carriedIgnored = new Set<string>();
+        const carriedAt = new Map<string, number>();
+        const carriedCat = new Map<string, string>();
         if (codeKey) {
           const history = await getCodeStatuses();
           data.forEach((r, i) => {
-            const status = history[normCode(r[codeKey])];
-            if (status === "done") carriedDone.add(String(i));
-            else if (status === "ignored") carriedIgnored.add(String(i));
+            const meta = history[normCode(r[codeKey])];
+            if (!meta) return;
+            const id = String(i);
+            if (meta.status === "done") carriedDone.add(id);
+            else if (meta.status === "ignored") carriedIgnored.add(id);
+            if (meta.status && meta.at) carriedAt.set(id, meta.at);
+            if (meta.category) carriedCat.set(id, meta.category);
           });
         }
 
@@ -283,6 +356,8 @@ export function ReviewClient() {
         setColumns(cols);
         setCompleted(carriedDone);
         setIgnored(carriedIgnored);
+        setStatusAt(carriedAt);
+        setCategory(carriedCat);
         setCarried({ done: carriedDone.size, ignored: carriedIgnored.size });
 
         if (carriedDone.size + carriedIgnored.size > 0) {
@@ -335,19 +410,55 @@ export function ReviewClient() {
     );
   };
 
-  const toggleIn =
-    (setter: React.Dispatch<React.SetStateAction<Set<string>>>) =>
-    (id: string) =>
-      setter((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return next;
-      });
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
-  const toggleComplete = toggleIn(setCompleted);
-  const toggleIgnore = toggleIn(setIgnored);
-  const toggleSelect = toggleIn(setSelected);
+  // Stamp "now" on rows that just became done/ignored, and drop the stamp of any
+  // row no longer marked — so statusAt holds exactly the marked rows, each with
+  // the date it was marked (not the upload date). Rows carried over from an
+  // earlier sheet already have a stamp, so they keep their original date.
+  const reconcileStatusAt = (
+    nextCompleted: Set<string>,
+    nextIgnored: Set<string>,
+  ) =>
+    setStatusAt((prev) => {
+      const next = new Map(prev);
+      const now = Date.now();
+      for (const id of nextCompleted) if (!next.has(id)) next.set(id, now);
+      for (const id of nextIgnored) if (!next.has(id)) next.set(id, now);
+      for (const id of [...next.keys()])
+        if (!nextCompleted.has(id) && !nextIgnored.has(id)) next.delete(id);
+      return next;
+    });
+
+  const toggleComplete = (id: string) => {
+    const next = new Set(completed);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setCompleted(next);
+    reconcileStatusAt(next, ignored);
+  };
+
+  const toggleIgnore = (id: string) => {
+    const next = new Set(ignored);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setIgnored(next);
+    reconcileStatusAt(completed, next);
+  };
+
+  const setCategoryFor = (id: string, value: string) =>
+    setCategory((prev) => {
+      const next = new Map(prev);
+      if (value) next.set(id, value);
+      else next.delete(id);
+      return next;
+    });
 
   const toggleSelectMany = (ids: string[], checked: boolean) =>
     setSelected((prev) => {
@@ -360,18 +471,24 @@ export function ReviewClient() {
     });
 
   // Apply a bulk action to the currently checked rows, then clear the checks.
-  const applyToSelected = (
-    setter: React.Dispatch<React.SetStateAction<Set<string>>>,
-    add: boolean,
-  ) => {
-    setter((prev) => {
-      const next = new Set(prev);
+  const applyToSelected = (which: "completed" | "ignored", add: boolean) => {
+    if (which === "completed") {
+      const next = new Set(completed);
       for (const id of selected) {
         if (add) next.add(id);
         else next.delete(id);
       }
-      return next;
-    });
+      setCompleted(next);
+      reconcileStatusAt(next, ignored);
+    } else {
+      const next = new Set(ignored);
+      for (const id of selected) {
+        if (add) next.add(id);
+        else next.delete(id);
+      }
+      setIgnored(next);
+      reconcileStatusAt(completed, next);
+    }
     setSelected(new Set());
   };
 
@@ -382,6 +499,8 @@ export function ReviewClient() {
         values: columns.map((c) => r[c] ?? null),
         completed: completed.has(String(i)),
         ignored: ignored.has(String(i)),
+        statusAt: statusAt.get(String(i)),
+        category: category.get(String(i)),
       }));
       const id = await saveDataset({
         id: currentId ?? undefined,
@@ -408,11 +527,14 @@ export function ReviewClient() {
     const exportCols = columns.filter(
       (c) => !exclude.includes(normalizeHeader(c)),
     );
+    const header = [...exportCols, CATEGORY_COL];
     const data = rows
-      .filter((_, i) => !ignored.has(String(i)))
-      .map((r) => {
+      .map((r, i) => ({ r, i }))
+      .filter(({ i }) => !ignored.has(String(i)))
+      .map(({ r, i }) => {
         const obj: Record<string, Cell> = {};
         for (const c of exportCols) obj[c] = r[c] ?? null;
+        obj[CATEGORY_COL] = category.get(String(i)) ?? null;
         return obj;
       });
 
@@ -421,7 +543,7 @@ export function ReviewClient() {
       return;
     }
 
-    const ws = XLSX.utils.json_to_sheet(data, { header: exportCols });
+    const ws = XLSX.utils.json_to_sheet(data, { header });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
     const base =
@@ -477,11 +599,10 @@ export function ReviewClient() {
       return;
     }
 
-    setCompleted((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) next.add(id);
-      return next;
-    });
+    const nextCompleted = new Set(completed);
+    for (const id of ids) nextCompleted.add(id);
+    setCompleted(nextCompleted);
+    reconcileStatusAt(nextCompleted, ignored);
 
     const missing = [...wanted].filter((c) => !matchedCodes.has(c));
     const msg =
@@ -517,6 +638,20 @@ export function ReviewClient() {
       setIgnored(
         new Set(ds.rows.map((sr, i) => (sr.ignored ? String(i) : "")).filter(Boolean)),
       );
+      setStatusAt(
+        new Map(
+          ds.rows.flatMap((sr, i) =>
+            sr.statusAt != null ? [[String(i), sr.statusAt] as [string, number]] : [],
+          ),
+        ),
+      );
+      setCategory(
+        new Map(
+          ds.rows.flatMap((sr, i) =>
+            sr.category ? [[String(i), sr.category] as [string, string]] : [],
+          ),
+        ),
+      );
       setSelected(new Set());
       setFileName(ds.fileName);
       setName(ds.name);
@@ -546,6 +681,8 @@ export function ReviewClient() {
     setColumns([]);
     setCompleted(new Set());
     setIgnored(new Set());
+    setStatusAt(new Map());
+    setCategory(new Map());
     setSelected(new Set());
     setName("");
     setError(null);
@@ -775,14 +912,14 @@ export function ReviewClient() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => applyToSelected(setCompleted, true)}
+                onClick={() => applyToSelected("completed", true)}
               >
                 <CircleCheck /> Mark done
               </Button>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => applyToSelected(setIgnored, true)}
+                onClick={() => applyToSelected("ignored", true)}
               >
                 <EyeOff /> Ignore
               </Button>
@@ -800,10 +937,39 @@ export function ReviewClient() {
             // Remount when the column set changes so filters/sort from a
             // previous sheet can't carry over and hide rows.
             key={columns.join("|")}
-            columns={columns}
-            rows={visibleDataRows}
+            columns={tableColumns}
+            rows={tableRows}
             numericColumns={numericCols}
             copyableColumns={copyableCols}
+            renderCell={(row, col) => {
+              if (col === CATEGORY_COL) {
+                return (
+                  <select
+                    value={category.get(row.__id) ?? ""}
+                    onChange={(e) => setCategoryFor(row.__id, e.target.value)}
+                    className="h-8 w-full min-w-28 rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                  >
+                    <option value="">—</option>
+                    {CATEGORY_OPTIONS.map((o) => (
+                      <option key={o} value={o}>
+                        {o}
+                      </option>
+                    ))}
+                  </select>
+                );
+              }
+              if (col === MARKED_COL) {
+                const v = stringify(row[MARKED_COL]);
+                return v ? (
+                  <span className="whitespace-nowrap text-muted-foreground tabular-nums">
+                    {v}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground/40">—</span>
+                );
+              }
+              return undefined;
+            }}
             selection={{
               isSelected: (id) => selected.has(id),
               onToggle: toggleSelect,
