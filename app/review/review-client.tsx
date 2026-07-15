@@ -12,6 +12,7 @@ import {
   Loader2,
   Save,
   Trash2,
+  TriangleAlert,
   Upload,
   X,
 } from "lucide-react";
@@ -44,14 +45,31 @@ type Row = Record<string, Cell>;
 
 // App-managed columns appended after the sheet's own columns in the table.
 const MARKED_COL = "Status date"; // when the row was marked done/ignored
+const LATE_COL = "Late"; // ordered this long ago but still showing up
 const CATEGORY_COL = "Category"; // pharma / sena / sherktha
 const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha"] as const;
+
+// A row still present this many days after it was marked done was ordered but
+// never arrived — flag it so it can be chased up.
+const LATE_AFTER_DAYS = 4;
 
 // Local date as YYYY-MM-DD — human-readable and sorts/filters correctly as text.
 const formatDate = (ms: number): string => {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+// Whole days between two instants, measured on local calendar dates so the
+// count matches the displayed Status date rather than the time of day it was
+// marked.
+const daysSince = (ms: number, now: number): number => {
+  const startOfDay = (t: number) => {
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+  return Math.round((startOfDay(now) - startOfDay(ms)) / 86_400_000);
 };
 
 // Only these columns are shown in the review table, in this order. Everything
@@ -155,16 +173,40 @@ export function ReviewClient() {
     [dataRows, hideIgnored, hideDone, ignored, completed],
   );
 
-  // Columns actually rendered by the table: the sheet's columns plus our two
-  // app-managed ones (mark date + category). Kept separate from `columns` so
-  // export / save / code-history logic still only see the sheet's own columns.
+  // Columns actually rendered by the table: the sheet's columns plus our
+  // app-managed ones (mark date + late flag + category). Kept separate from
+  // `columns` so export / save / code-history logic still only see the sheet's
+  // own columns.
   const tableColumns = React.useMemo(
-    () => [...columns, MARKED_COL, CATEGORY_COL],
+    () => [...columns, MARKED_COL, LATE_COL, CATEGORY_COL],
     [columns],
   );
 
-  // Inject the mark date (formatted YYYY-MM-DD so it sorts correctly) and the
-  // category into each row so the table can filter/sort/search on them.
+  // Re-read the clock hourly so a tab left open overnight starts flagging rows
+  // that crossed the late threshold while it sat there.
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const handle = setInterval(() => setNow(Date.now()), 60 * 60 * 1000);
+    return () => clearInterval(handle);
+  }, []);
+
+  // A row is late when it was marked done (i.e. ordered) at least
+  // LATE_AFTER_DAYS ago yet is still in the sheet — meaning it never arrived.
+  // Ignored rows are excluded: nothing was ordered, so they're expected to stay.
+  const isLate = React.useCallback(
+    (id: string) => {
+      const at = statusAt.get(id);
+      return (
+        at != null && completed.has(id) && daysSince(at, now) >= LATE_AFTER_DAYS
+      );
+    },
+    [statusAt, completed, now],
+  );
+
+  // Inject the mark date (formatted YYYY-MM-DD so it sorts correctly), the late
+  // flag and the category into each row so the table can filter/sort/search on
+  // them. The late cell holds the plain word so searching "late" finds it and
+  // the column filter has a single clean value; the day count lives in the badge.
   const tableRows = React.useMemo(
     () =>
       visibleDataRows.map((r) => {
@@ -172,10 +214,16 @@ export function ReviewClient() {
         return {
           ...r,
           [MARKED_COL]: at ? formatDate(at) : "",
+          [LATE_COL]: isLate(r.__id) ? "Late" : "",
           [CATEGORY_COL]: category.get(r.__id) ?? "",
         };
       }),
-    [visibleDataRows, statusAt, category],
+    [visibleDataRows, statusAt, category, isLate],
+  );
+
+  const lateCount = React.useMemo(
+    () => [...completed].filter(isLate).length,
+    [completed, isLate],
   );
 
   const numericCols = React.useMemo(() => {
@@ -831,6 +879,11 @@ export function ReviewClient() {
             />
             <span className="px-1 text-sm text-muted-foreground">
               {completedCount} done · {ignored.size} ignored · {rows.length} rows
+              {lateCount > 0 && (
+                <span className="ml-1 font-medium text-destructive">
+                  · {lateCount} late
+                </span>
+              )}
             </span>
             {ignored.size > 0 && (
               <Button
@@ -956,6 +1009,20 @@ export function ReviewClient() {
                       </option>
                     ))}
                   </select>
+                );
+              }
+              if (col === LATE_COL) {
+                if (stringify(row[LATE_COL]) === "")
+                  return <span className="text-muted-foreground/40">—</span>;
+                const at = statusAt.get(row.__id);
+                return (
+                  <span
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive"
+                    title={`Ordered ${at ? formatDate(at) : ""} and still on the sheet`}
+                  >
+                    <TriangleAlert className="size-3" />
+                    Late · {at ? daysSince(at, now) : 0}d
+                  </span>
                 );
               }
               if (col === MARKED_COL) {
