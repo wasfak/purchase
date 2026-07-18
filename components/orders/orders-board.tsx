@@ -2,19 +2,20 @@
 
 import * as React from "react";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toDateStr, currentMonthStr, monthLabel } from "@/lib/dates";
 
-type FieldType = "text" | "date" | "textarea" | "day";
+type FieldType = "text" | "date" | "textarea" | "day" | "yesno";
 
 type Column = { key: string; label: string; type: FieldType };
 
 const COLUMNS: Column[] = [
   { key: "companyName", label: "Company name", type: "text" },
+  { key: "important", label: "Important", type: "yesno" },
   { key: "orderDay", label: "Order day", type: "day" },
   { key: "dateOfDoing", label: "Date of doing", type: "date" },
   { key: "inReview", label: "In review", type: "date" },
@@ -29,6 +30,7 @@ const COLUMNS: Column[] = [
 // Fields that can be changed after the order is created. Company name is set
 // once, at creation, and is read-only afterwards.
 const EDITABLE_FIELDS = new Set([
+  "important",
   "orderDay",
   "dateOfDoing",
   "inReview",
@@ -59,6 +61,7 @@ const HEADER_ALIASES: Record<string, string> = {
   finished: "finished",
   "order notes": "notes",
   notes: "notes",
+  important: "important",
 };
 
 type Order = Record<string, string> & { _id: string };
@@ -105,8 +108,55 @@ function isDone(order: Order): boolean {
   return (order.dateOfDoing ?? "").trim() !== "";
 }
 
+// An order counts as fully sent once BOTH its date of doing and send date are
+// filled — the "Sent" filter narrows the table down to these.
+function isSent(order: Order): boolean {
+  return (
+    (order.dateOfDoing ?? "").trim() !== "" && (order.sendDate ?? "").trim() !== ""
+  );
+}
+
+// An order hasn't been started while neither its date of doing nor its send
+// date has been filled in yet — the "Not started" filter shows only these.
+// Orders marked "no need" this month are excluded, since there's nothing to do.
+function isNotStarted(order: Order): boolean {
+  return (
+    !isNoNeed(order) &&
+    (order.dateOfDoing ?? "").trim() === "" &&
+    (order.sendDate ?? "").trim() === ""
+  );
+}
+
+// The user has marked this company as not needing an order this month.
+function isNoNeed(order: Order): boolean {
+  return (order.noNeed ?? "").trim() === "yes";
+}
+
+// The user flagged this order as important for this month.
+function isImportant(order: Order): boolean {
+  return (order.important ?? "").trim().toLowerCase() === "yes";
+}
+
+// The row filter applied on top of the selected month.
+type OrderFilter = "all" | "notStarted" | "sent" | "noNeed" | "important";
+
 // The read-only display node for a cell, with a dash fallback when empty.
 function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
+  if (col.type === "yesno") {
+    const yes = raw.trim().toLowerCase() === "yes";
+    return (
+      <span
+        className={cn(
+          "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
+          yes
+            ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+            : "text-muted-foreground",
+        )}
+      >
+        {yes ? "Yes" : "No"}
+      </span>
+    );
+  }
   if (col.type === "day") {
     if (!raw) return <span className="text-muted-foreground">—</span>;
     return (
@@ -156,6 +206,9 @@ export function OrdersBoard() {
   const [submitting, setSubmitting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [busyIds, setBusyIds] = React.useState<Set<string>>(new Set());
+  // Narrows the table: all rows, only not-yet-started ones, or only fully-sent
+  // ones.
+  const [filter, setFilter] = React.useState<OrderFilter>("all");
   // The single cell currently being edited inline.
   const [editing, setEditing] = React.useState<{
     id: string;
@@ -203,6 +256,17 @@ export function OrdersBoard() {
     () => orders.filter((o) => effectiveMonth(o) === month),
     [orders, effectiveMonth, month],
   );
+
+  // The rows actually rendered: the month's orders, optionally narrowed by the
+  // active filter. Kept separate from visibleOrders so month-level logic
+  // (dedup, carry-over) still sees every row.
+  const displayedOrders = React.useMemo(() => {
+    if (filter === "sent") return visibleOrders.filter(isSent);
+    if (filter === "notStarted") return visibleOrders.filter(isNotStarted);
+    if (filter === "noNeed") return visibleOrders.filter(isNoNeed);
+    if (filter === "important") return visibleOrders.filter(isImportant);
+    return visibleOrders;
+  }, [visibleOrders, filter]);
 
   // The newest month (other than the one selected) that actually has orders —
   // the source we offer to carry companies over from into a fresh month.
@@ -369,6 +433,11 @@ export function OrdersBoard() {
     }
   }
 
+  // Flip the "no need this month" flag on an order and persist it.
+  function toggleNoNeed(order: Order) {
+    commitCell(order._id, "noNeed", isNoNeed(order) ? "" : "yes");
+  }
+
   async function deleteOrder(id: string) {
     setBusy(id, true);
     try {
@@ -477,9 +546,32 @@ export function OrdersBoard() {
         />
       </label>
       <span className="px-1 text-sm text-muted-foreground">
-        {visibleOrders.length} order{visibleOrders.length === 1 ? "" : "s"} in{" "}
-        {monthLabel(month)}
+        {displayedOrders.length} order{displayedOrders.length === 1 ? "" : "s"}
+        {filter === "sent"
+          ? " sent"
+          : filter === "notStarted"
+            ? " not started"
+            : filter === "noNeed"
+              ? " with no need"
+              : filter === "important"
+                ? " important"
+                : ""}{" "}
+        in {monthLabel(month)}
       </span>
+      <label className="flex items-center gap-2 text-sm font-medium">
+        Show
+        <select
+          value={filter}
+          onChange={(e) => setFilter(e.target.value as OrderFilter)}
+          className="h-9 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          <option value="all">All orders</option>
+          <option value="notStarted">Not started yet</option>
+          <option value="sent">Sent</option>
+          <option value="noNeed">No need</option>
+          <option value="important">Important</option>
+        </select>
+      </label>
       {carrySourceMonth && (
         <Button
           type="button"
@@ -524,7 +616,20 @@ export function OrdersBoard() {
                 <span className="text-destructive"> *</span>
               )}
             </label>
-            {col.type === "textarea" ? (
+            {col.type === "yesno" ? (
+              <select
+                value={
+                  form[col.key].trim().toLowerCase() === "yes" ? "yes" : "no"
+                }
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, [col.key]: e.target.value }))
+                }
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <option value="no">No</option>
+                <option value="yes">Yes</option>
+              </select>
+            ) : col.type === "textarea" ? (
               <textarea
                 value={form[col.key]}
                 onChange={(e) =>
@@ -623,6 +728,19 @@ export function OrdersBoard() {
             to review a past month or start a new one — &ldquo;Carry over&rdquo;
             copies the companies into a clean sheet.
           </p>
+          {displayedOrders.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border bg-card/50 p-10 text-center">
+              <p className="text-sm text-muted-foreground">
+                {filter === "sent"
+                  ? `No fully-sent orders in ${monthLabel(month)} yet.`
+                  : filter === "noNeed"
+                    ? `No orders marked "no need" in ${monthLabel(month)}.`
+                    : filter === "important"
+                      ? `No important orders in ${monthLabel(month)}.`
+                      : `No not-started orders in ${monthLabel(month)} — all done.`}
+              </p>
+            </div>
+          ) : (
           <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
             <table className="w-full text-sm">
               <thead>
@@ -639,10 +757,11 @@ export function OrdersBoard() {
                 </tr>
               </thead>
               <tbody>
-                {visibleOrders.map((order) => {
+                {displayedOrders.map((order) => {
                   const busy = busyIds.has(order._id);
                   const overdue = isOverdue(order);
                   const done = isDone(order);
+                  const noNeed = isNoNeed(order);
                   return (
                     <tr
                       key={order._id}
@@ -651,6 +770,7 @@ export function OrdersBoard() {
                         done &&
                           "bg-emerald-500/10 hover:bg-emerald-500/15 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/15",
                         overdue && "bg-destructive/10",
+                        noNeed && "bg-muted/40 text-muted-foreground",
                         busy && "opacity-60",
                       )}
                     >
@@ -671,7 +791,22 @@ export function OrdersBoard() {
                             )}
                           >
                             {isEditing ? (
-                              col.type === "textarea" ? (
+                              col.type === "yesno" ? (
+                                <select
+                                  autoFocus
+                                  defaultValue={
+                                    raw.trim().toLowerCase() === "yes" ? "yes" : "no"
+                                  }
+                                  onChange={(e) => e.currentTarget.blur()}
+                                  onBlur={(e) =>
+                                    onCellBlur(order._id, col.key, e.target.value)
+                                  }
+                                  className="h-8 w-full min-w-[5rem] rounded border border-ring bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                                >
+                                  <option value="no">No</option>
+                                  <option value="yes">Yes</option>
+                                </select>
+                              ) : col.type === "textarea" ? (
                                 <textarea
                                   autoFocus
                                   defaultValue={raw}
@@ -724,6 +859,27 @@ export function OrdersBoard() {
                         );
                       })}
                       <td className="px-3 py-2 align-top">
+                        <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleNoNeed(order)}
+                          disabled={busy}
+                          className={cn(
+                            "transition-colors disabled:opacity-50",
+                            noNeed
+                              ? "text-amber-600 dark:text-amber-500"
+                              : "text-muted-foreground/60 hover:text-amber-600 dark:hover:text-amber-500",
+                          )}
+                          title={
+                            noNeed
+                              ? "Marked: no need this month — click to clear"
+                              : "Mark: no need to order this month"
+                          }
+                          aria-label="Toggle no need this month"
+                          aria-pressed={noNeed}
+                        >
+                          <Ban className="size-4" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => deleteOrder(order._id)}
@@ -738,6 +894,7 @@ export function OrdersBoard() {
                             <Trash2 className="size-4" />
                           )}
                         </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -745,6 +902,7 @@ export function OrdersBoard() {
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
     </div>

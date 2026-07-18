@@ -32,6 +32,12 @@ const OrderSchema = new Schema(
     toWhere: { type: String, default: "" },
     exp: { type: String, default: "" }, // expired items (text)
 
+    // "yes" when this company doesn't need an order this month; "" otherwise.
+    noNeed: { type: String, default: "" },
+
+    // "yes" / "no" — flags an order as important for the month.
+    important: { type: String, default: "" },
+
     // Text notes, each with an optional file attachment (pdf/excel).
     damaged: { type: String, default: "" },
     damagedFile: { type: AttachmentSchema, default: null },
@@ -62,6 +68,8 @@ export const ORDER_TEXT_FIELDS = [
   "damaged",
   "finished",
   "notes",
+  "noNeed",
+  "important",
 ] as const;
 
 export type OrderTextField = (typeof ORDER_TEXT_FIELDS)[number];
