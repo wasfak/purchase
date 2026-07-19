@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -209,6 +209,8 @@ export function OrdersBoard() {
   // Narrows the table: all rows, only not-yet-started ones, or only fully-sent
   // ones.
   const [filter, setFilter] = React.useState<OrderFilter>("all");
+  // Free-text search over company names, applied on top of the filter.
+  const [search, setSearch] = React.useState("");
   // The single cell currently being edited inline.
   const [editing, setEditing] = React.useState<{
     id: string;
@@ -261,12 +263,19 @@ export function OrdersBoard() {
   // active filter. Kept separate from visibleOrders so month-level logic
   // (dedup, carry-over) still sees every row.
   const displayedOrders = React.useMemo(() => {
-    if (filter === "sent") return visibleOrders.filter(isSent);
-    if (filter === "notStarted") return visibleOrders.filter(isNotStarted);
-    if (filter === "noNeed") return visibleOrders.filter(isNoNeed);
-    if (filter === "important") return visibleOrders.filter(isImportant);
-    return visibleOrders;
-  }, [visibleOrders, filter]);
+    let rows = visibleOrders;
+    if (filter === "sent") rows = rows.filter(isSent);
+    else if (filter === "notStarted") rows = rows.filter(isNotStarted);
+    else if (filter === "noNeed") rows = rows.filter(isNoNeed);
+    else if (filter === "important") rows = rows.filter(isImportant);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((o) =>
+        (o.companyName ?? "").toLowerCase().includes(q),
+      );
+    }
+    return rows;
+  }, [visibleOrders, filter, search]);
 
   // The newest month (other than the one selected) that actually has orders —
   // the source we offer to carry companies over from into a fresh month.
@@ -558,6 +567,16 @@ export function OrdersBoard() {
                 : ""}{" "}
         in {monthLabel(month)}
       </span>
+      <label className="relative flex items-center">
+        <Search className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground" />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search company…"
+          className="h-9 w-44 rounded-lg border border-border bg-background pl-8 pr-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+        />
+      </label>
       <label className="flex items-center gap-2 text-sm font-medium">
         Show
         <select
@@ -731,13 +750,17 @@ export function OrdersBoard() {
           {displayedOrders.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border bg-card/50 p-10 text-center">
               <p className="text-sm text-muted-foreground">
-                {filter === "sent"
+                {search.trim()
+                  ? `No companies matching "${search.trim()}" in ${monthLabel(month)}.`
+                  : filter === "sent"
                   ? `No fully-sent orders in ${monthLabel(month)} yet.`
                   : filter === "noNeed"
                     ? `No orders marked "no need" in ${monthLabel(month)}.`
                     : filter === "important"
                       ? `No important orders in ${monthLabel(month)}.`
-                      : `No not-started orders in ${monthLabel(month)} — all done.`}
+                      : filter === "notStarted"
+                        ? `No not-started orders in ${monthLabel(month)} — all done.`
+                        : `No orders to show in ${monthLabel(month)}.`}
               </p>
             </div>
           ) : (
