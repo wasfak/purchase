@@ -6,7 +6,7 @@ import { NotchNav } from "@/components/ui/notch-nav";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
-import { canViewDashboard } from "@/lib/access";
+import { canViewDashboard, hasFullAccess } from "@/lib/access";
 
 type NavIcon = "home" | "dashboard" | "orders" | "review" | "contracts";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
@@ -21,24 +21,28 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // The Dashboard link only renders for allow-listed admin emails.
-  const showDashboard = await canViewDashboard();
-  const navItems: NavItem[] = [
-    { value: "home", label: "Notes", href: "/", icon: "home" },
-    ...(showDashboard
-      ? [
-          {
-            value: "dashboard",
-            label: "Dashboard",
-            href: "/dashboard",
-            icon: "dashboard",
-          } as NavItem,
-        ]
-      : []),
-    { value: "orders", label: "Orders", href: "/orders", icon: "orders" },
-    { value: "review", label: "Review", href: "/review", icon: "review" },
-    { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
-  ];
+  // Users without full access only ever see the Review tab; among full-access
+  // users, the Dashboard link additionally requires the dashboard allow-list.
+  const fullAccess = await hasFullAccess();
+  const showDashboard = fullAccess && (await canViewDashboard());
+  const navItems: NavItem[] = fullAccess
+    ? [
+        { value: "home", label: "Notes", href: "/", icon: "home" },
+        ...(showDashboard
+          ? [
+              {
+                value: "dashboard",
+                label: "Dashboard",
+                href: "/dashboard",
+                icon: "dashboard",
+              } as NavItem,
+            ]
+          : []),
+        { value: "orders", label: "Orders", href: "/orders", icon: "orders" },
+        { value: "review", label: "Review", href: "/review", icon: "review" },
+        { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
+      ]
+    : [{ value: "review", label: "Review", href: "/review", icon: "review" }];
 
   return (
     <html
@@ -56,7 +60,7 @@ export default async function RootLayout({
               <div className="mx-auto w-full max-w-7xl">
                 <NotchNav
                   items={navItems}
-                  defaultValue="home"
+                  defaultValue={fullAccess ? "home" : "review"}
                   ariaLabel="Primary navigation"
                 />
               </div>

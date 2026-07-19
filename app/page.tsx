@@ -1,6 +1,8 @@
 import { TaskBoard } from "@/components/tasks/task-board";
+import { requireFullAccess } from "@/lib/access";
 
-export default function Page() {
+export default async function Page() {
+  await requireFullAccess();
   return (
     <main className="mx-auto w-full max-w-6xl space-y-5 p-6">
       <div className="border-b pb-3">

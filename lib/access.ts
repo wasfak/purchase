@@ -1,4 +1,5 @@
 import { currentUser } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
 
 // Emails allowed to see the admin Dashboard. Configure as a comma-separated
 // list in DASHBOARD_ALLOWED_EMAILS (see .env.local). Matching is
@@ -36,4 +37,26 @@ async function currentUserEmail(): Promise<string | null> {
 /** Whether the signed-in user is allowed to see the Dashboard. */
 export async function canViewDashboard(): Promise<boolean> {
   return isAllowedDashboardEmail(await currentUserEmail());
+}
+
+// Emails allowed to use the whole site. Everyone else is limited to the
+// Review page. Configure as a comma-separated list in FULL_ACCESS_EMAILS.
+const FULL_ACCESS_EMAILS = (process.env.FULL_ACCESS_EMAILS ?? "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+/** Whether the signed-in user may access every tab (not just Review). */
+export async function hasFullAccess(): Promise<boolean> {
+  const email = await currentUserEmail();
+  if (!email) return false;
+  return FULL_ACCESS_EMAILS.includes(email.toLowerCase());
+}
+
+/**
+ * Server-component guard for restricted pages: users without full access are
+ * sent to the Review page, the only one they're allowed to use.
+ */
+export async function requireFullAccess(): Promise<void> {
+  if (!(await hasFullAccess())) redirect("/review");
 }

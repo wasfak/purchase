@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
 
-import { canViewDashboard } from "@/lib/access";
+import { canViewDashboard, requireFullAccess } from "@/lib/access";
 import { getAllOrdersWithUploaders } from "@/lib/admin-orders";
 import { AdminOrders } from "@/components/dashboard/admin-orders";
 
 export default async function dashboard() {
+  await requireFullAccess();
   // Hidden feature: anyone not on the allow-list gets a 404, so the page's
   // existence isn't revealed even via a direct URL.
   if (!(await canViewDashboard())) notFound();
