@@ -237,6 +237,15 @@ export async function getCodeStatuses(): Promise<Record<string, CodeMeta>> {
   return out;
 }
 
+/** Wipe the entire cross-sheet code history — used to start a fresh baseline. */
+export async function clearCodeStatuses(): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_SESSION, "readwrite");
+  tx.objectStore(STORE_SESSION).delete(CODES_KEY);
+  await txDone(tx);
+  db.close();
+}
+
 /**
  * Merge per-code updates into the history. Each update is field-merged onto the
  * existing entry; passing `null`, or an entry that ends up with neither a status

@@ -9,7 +9,11 @@ import {
   Download,
   EyeOff,
   FileSpreadsheet,
+  Flag,
+  Link2,
+  Link2Off,
   Loader2,
+  RotateCcw,
   Save,
   Trash2,
   TriangleAlert,
@@ -27,6 +31,7 @@ import {
   type DataRow,
 } from "@/lib/dataset";
 import {
+  clearCodeStatuses,
   clearSession,
   deleteDataset,
   getCodeStatuses,
@@ -138,6 +143,11 @@ export function ReviewClient() {
   const [saving, setSaving] = React.useState(false);
   const [hideIgnored, setHideIgnored] = React.useState(false);
   const [hideDone, setHideDone] = React.useState(false);
+
+  // When on (default), a new upload carries over done/ignored/category by code
+  // from previous sheets, and the current sheet feeds that shared history. When
+  // off, uploads start clean and this sheet stays standalone.
+  const [linkHistory, setLinkHistory] = React.useState(true);
 
   // The id of the saved dataset currently open, so re-saving updates it in
   // place instead of creating a duplicate. Null for a fresh, unsaved upload.
@@ -336,7 +346,7 @@ export function ReviewClient() {
   // is authoritative for the codes it contains — their status, the date it was
   // set, and the category all carry forward to the next sheet by code.
   React.useEffect(() => {
-    if (!hydrated || !codeCol || rows.length === 0) return;
+    if (!hydrated || !linkHistory || !codeCol || rows.length === 0) return;
     const handle = setTimeout(() => {
       const updates: Record<string, CodeMeta | null> = {};
       rows.forEach((r, i) => {
@@ -357,7 +367,7 @@ export function ReviewClient() {
       void mergeCodeStatuses(updates).catch(() => {});
     }, 500);
     return () => clearTimeout(handle);
-  }, [hydrated, codeCol, rows, completed, ignored, statusAt, category]);
+  }, [hydrated, linkHistory, codeCol, rows, completed, ignored, statusAt, category]);
 
   const parseFile = React.useCallback(async (file: File) => {
     setLoading(true);
@@ -387,7 +397,7 @@ export function ReviewClient() {
         const carriedIgnored = new Set<string>();
         const carriedAt = new Map<string, number>();
         const carriedCat = new Map<string, string>();
-        if (codeKey) {
+        if (codeKey && linkHistory) {
           const history = await getCodeStatuses();
           data.forEach((r, i) => {
             const meta = history[normCode(r[codeKey])];
@@ -427,7 +437,7 @@ export function ReviewClient() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [linkHistory]);
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -664,6 +674,90 @@ export function ReviewClient() {
     setCodesText("");
   };
 
+  // Clear the done/ignored status on every row whose code appears in the pasted
+  // list — undoing a previous "done"/"ignore". Also removes those codes from the
+  // cross-sheet history, so they don't carry over again (and this reaches codes
+  // that aren't even in the current sheet). Category, if any, is kept.
+  const unmarkByCodes = () => {
+    const wanted = new Set(
+      codesText
+        .split(/[\s,;]+/)
+        .map((s) => normCode(s))
+        .filter(Boolean),
+    );
+    if (wanted.size === 0) {
+      toast.error("Paste some codes first.");
+      return;
+    }
+
+    let cleared = 0;
+    if (codeCol) {
+      const nextCompleted = new Set(completed);
+      const nextIgnored = new Set(ignored);
+      rows.forEach((r, i) => {
+        const code = normCode(r[codeCol]);
+        if (code && wanted.has(code)) {
+          const id = String(i);
+          if (nextCompleted.delete(id) || nextIgnored.delete(id)) cleared++;
+        }
+      });
+      setCompleted(nextCompleted);
+      setIgnored(nextIgnored);
+      reconcileStatusAt(nextCompleted, nextIgnored);
+    }
+
+    // Drop the status from history for all pasted codes (keeps any category).
+    const updates: Record<string, CodeMeta> = {};
+    for (const code of wanted) updates[code] = { status: undefined, at: undefined };
+    void mergeCodeStatuses(updates).catch(() => {});
+
+    const msg = `Cleared status on ${cleared} row${
+      cleared === 1 ? "" : "s"
+    } and un-marked ${wanted.size} code${
+      wanted.size === 1 ? "" : "s"
+    } in history.`;
+    setMarkResult(msg);
+    toast.success(msg);
+    setCodesText("");
+  };
+
+  // Make the current sheet the baseline that future sheets compare against:
+  // wipe the accumulated history, then re-seed it from this sheet's marks. Also
+  // re-enables linking so the next upload actually compares against it.
+  const setAsStarter = async () => {
+    try {
+      await clearCodeStatuses();
+      if (codeCol) {
+        const updates: Record<string, CodeMeta> = {};
+        rows.forEach((r, i) => {
+          const code = normCode(r[codeCol]);
+          if (!code) return;
+          const id = String(i);
+          const status = completed.has(id)
+            ? "done"
+            : ignored.has(id)
+              ? "ignored"
+              : undefined;
+          const cat = category.get(id) || undefined;
+          if (status || cat) {
+            updates[code] = {
+              status,
+              at: status ? statusAt.get(id) : undefined,
+              category: cat,
+            };
+          }
+        });
+        await mergeCodeStatuses(updates);
+      }
+      setLinkHistory(true);
+      toast.success(
+        "This sheet is now the starter — future sheets compare against it.",
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't set the starter");
+    }
+  };
+
   const openSaved = async (id: string) => {
     setLoading(true);
     setError(null);
@@ -744,6 +838,53 @@ export function ReviewClient() {
 
   return (
     <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-3 py-2.5">
+        <div className="flex items-center gap-2.5">
+          {linkHistory ? (
+            <Link2 className="size-4 shrink-0 text-primary" />
+          ) : (
+            <Link2Off className="size-4 shrink-0 text-muted-foreground" />
+          )}
+          <div className="min-w-0">
+            <p className="text-sm font-medium">
+              {linkHistory ? "Linked to history" : "Clean sheet (unlinked)"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {linkHistory
+                ? "New uploads carry over done/ignored by code from previous sheets."
+                : "New uploads start clean — nothing carries over, and this sheet won't feed history."}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setLinkHistory((v) => !v)}
+          >
+            {linkHistory ? (
+              <>
+                <Link2Off /> Start clean sheet
+              </>
+            ) : (
+              <>
+                <Link2 /> Link to history
+              </>
+            )}
+          </Button>
+          {hasData && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={setAsStarter}
+              title="Make this sheet the baseline future sheets compare against"
+            >
+              <Flag /> Set as starter
+            </Button>
+          )}
+        </div>
+      </div>
+
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -908,7 +1049,7 @@ export function ReviewClient() {
                 variant={markOpen ? "default" : "outline"}
                 onClick={() => setMarkOpen((v) => !v)}
               >
-                <CircleCheck /> Mark done by codes
+                <CircleCheck /> Mark / un-mark by codes
               </Button>
             )}
             <Button variant="outline" onClick={exportExcel}>
@@ -923,7 +1064,8 @@ export function ReviewClient() {
           {markOpen && codeCol && (
             <div className="flex flex-col gap-2 rounded-xl border border-primary/40 bg-primary/5 p-3 text-sm">
               <label className="font-medium">
-                Paste codes to mark done
+                Paste codes to mark done — or clear their status (un-done /
+                un-ignore)
                 <span className="ml-2 font-normal text-muted-foreground">
                   (separated by spaces, commas, or new lines)
                 </span>
@@ -938,6 +1080,9 @@ export function ReviewClient() {
               <div className="flex items-center gap-2">
                 <Button size="sm" onClick={markDoneByCodes}>
                   <CircleCheck /> Mark done
+                </Button>
+                <Button size="sm" variant="outline" onClick={unmarkByCodes}>
+                  <RotateCcw /> Un-mark (clear status)
                 </Button>
                 <Button
                   size="sm"
