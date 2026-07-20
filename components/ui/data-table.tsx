@@ -31,6 +31,8 @@ interface DataTableProps {
   copyableColumns?: Set<string>;
   /** Extra controls on the right of the toolbar. */
   rightToolbar?: React.ReactNode;
+  /** How many rows to show before the table body scrolls. Defaults to 15. */
+  maxRows?: number;
   /** If provided, search/filters/sort are persisted to localStorage under this key. */
   storageKey?: string;
   /** Adds a leading checkbox column for selecting rows. */
@@ -87,6 +89,7 @@ export function DataTable({
   numericColumns,
   copyableColumns,
   rightToolbar,
+  maxRows = 15,
   storageKey,
   selection,
   completion,
@@ -311,6 +314,23 @@ export function DataTable({
     menu &&
     menuValues.every((v) => !filters[menu.col] || filters[menu.col].has(v));
 
+  // Cap the scrollable body to `maxRows` rows: measure the sticky header plus a
+  // real row and pin the container's max height to that, so exactly maxRows show
+  // and the rest scroll under the frozen header.
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const [maxHeight, setMaxHeight] = React.useState<number | undefined>(undefined);
+  React.useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const head = container.querySelector("thead") as HTMLElement | null;
+    const firstRow = container.querySelector("tbody tr") as HTMLElement | null;
+    if (!head || !firstRow || visibleRows.length <= maxRows) {
+      setMaxHeight(undefined);
+      return;
+    }
+    setMaxHeight(head.offsetHeight + firstRow.offsetHeight * maxRows + 1);
+  }, [visibleRows, columns, maxRows]);
+
   return (
     <>
       {/* Toolbar */}
@@ -337,7 +357,11 @@ export function DataTable({
       </div>
 
       {/* Table */}
-      <div className="overflow-auto rounded-xl border border-border">
+      <div
+        ref={scrollRef}
+        style={{ maxHeight }}
+        className="overflow-auto rounded-xl border border-border"
+      >
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-card">
             <tr>
