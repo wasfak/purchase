@@ -88,18 +88,51 @@ const OVERDUE_GRACE_DAYS = 3;
 
 // An order is "done" for the month once its date of doing is filled. It's
 // overdue when that's still empty and today is more than OVERDUE_GRACE_DAYS
-// past this month's order day — that's what turns the row red.
-function isOverdue(order: Order): boolean {
+// past that order's due date — the order day within its OWN month (`month` is
+// "YYYY-MM"). Measuring against the order's month, not today's calendar month,
+// is what keeps a freshly-started future month from showing up red before its
+// day has actually arrived.
+function isOverdue(order: Order, month: string): boolean {
+  const day = parseInt(order.orderDay ?? "", 10);
+  if (!day || day < 1 || day > 31) return false;
+  if ((order.dateOfDoing ?? "").trim()) return false; // already done
+  if (!/^\d{4}-\d{2}$/.test(month)) return false;
+
+  const [year, mo] = month.split("-").map(Number);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const lastOfMonth = new Date(year, mo, 0).getDate();
+  const due = new Date(year, mo - 1, Math.min(day, lastOfMonth));
+  const diffDays = (now.getTime() - due.getTime()) / 86_400_000;
+  return diffDays > OVERDUE_GRACE_DAYS;
+}
+
+// How many days ahead of the order day counts as "due soon".
+const DUE_SOON_DAYS = 4;
+
+// An order is "due soon" when it's not done and the next real-calendar
+// occurrence of its order day is DUE_SOON_DAYS or fewer days away. This is
+// measured against today's actual date — not the month sheet being viewed — so
+// that when you pre-start next month's sheet, an order whose day is coming up
+// this week still lights up amber. e.g. today is the 27th and an order's day is
+// the 28th → due tomorrow → amber, even while viewing next month.
+function isDueSoon(order: Order): boolean {
   const day = parseInt(order.orderDay ?? "", 10);
   if (!day || day < 1 || day > 31) return false;
   if ((order.dateOfDoing ?? "").trim()) return false; // already done
 
   const now = new Date();
   now.setHours(0, 0, 0, 0);
-  const lastOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const due = new Date(now.getFullYear(), now.getMonth(), Math.min(day, lastOfMonth));
-  const diffDays = (now.getTime() - due.getTime()) / 86_400_000;
-  return diffDays > OVERDUE_GRACE_DAYS;
+  // The order day in the current real month; if it's already past, roll to the
+  // same day next month — that's the next time this order comes due.
+  const clampDay = (y: number, m: number) =>
+    Math.min(day, new Date(y, m + 1, 0).getDate());
+  let due = new Date(now.getFullYear(), now.getMonth(), clampDay(now.getFullYear(), now.getMonth()));
+  if (due.getTime() < now.getTime()) {
+    due = new Date(now.getFullYear(), now.getMonth() + 1, clampDay(now.getFullYear(), now.getMonth() + 1));
+  }
+  const daysUntil = (due.getTime() - now.getTime()) / 86_400_000;
+  return daysUntil <= DUE_SOON_DAYS;
 }
 
 // An order is done once its date of doing is filled — that's what turns the row
@@ -138,7 +171,13 @@ function isImportant(order: Order): boolean {
 }
 
 // The row filter applied on top of the selected month.
-type OrderFilter = "all" | "notStarted" | "sent" | "noNeed" | "important";
+type OrderFilter =
+  | "all"
+  | "notStarted"
+  | "sent"
+  | "noNeed"
+  | "important"
+  | "dueSoon";
 
 // The read-only display node for a cell, with a dash fallback when empty.
 function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
@@ -268,6 +307,7 @@ export function OrdersBoard() {
     else if (filter === "notStarted") rows = rows.filter(isNotStarted);
     else if (filter === "noNeed") rows = rows.filter(isNoNeed);
     else if (filter === "important") rows = rows.filter(isImportant);
+    else if (filter === "dueSoon") rows = rows.filter(isDueSoon);
     const q = search.trim().toLowerCase();
     if (q) {
       rows = rows.filter((o) =>
@@ -411,6 +451,7 @@ export function OrdersBoard() {
       toCreate.push({
         companyName: o.companyName,
         orderDay: o.orderDay ?? "",
+        important: o.important ?? "",
         month,
       });
     }
@@ -564,7 +605,9 @@ export function OrdersBoard() {
               ? " with no need"
               : filter === "important"
                 ? " important"
-                : ""}{" "}
+                : filter === "dueSoon"
+                  ? " due soon"
+                  : ""}{" "}
         in {monthLabel(month)}
       </span>
       <label className="relative flex items-center">
@@ -589,6 +632,7 @@ export function OrdersBoard() {
           <option value="sent">Sent</option>
           <option value="noNeed">No need</option>
           <option value="important">Important</option>
+          <option value="dueSoon">Due soon</option>
         </select>
       </label>
       {carrySourceMonth && (
@@ -758,6 +802,8 @@ export function OrdersBoard() {
                     ? `No orders marked "no need" in ${monthLabel(month)}.`
                     : filter === "important"
                       ? `No important orders in ${monthLabel(month)}.`
+                      : filter === "dueSoon"
+                      ? `No orders due soon in ${monthLabel(month)}.`
                       : filter === "notStarted"
                         ? `No not-started orders in ${monthLabel(month)} — all done.`
                         : `No orders to show in ${monthLabel(month)}.`}
@@ -782,7 +828,8 @@ export function OrdersBoard() {
               <tbody>
                 {displayedOrders.map((order) => {
                   const busy = busyIds.has(order._id);
-                  const overdue = isOverdue(order);
+                  const overdue = isOverdue(order, effectiveMonth(order));
+                  const dueSoon = isDueSoon(order);
                   const done = isDone(order);
                   const noNeed = isNoNeed(order);
                   return (
@@ -792,6 +839,7 @@ export function OrdersBoard() {
                         "border-b border-border/60 last:border-0",
                         done &&
                           "bg-emerald-500/10 hover:bg-emerald-500/15 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/15",
+                        dueSoon && "bg-amber-500/15 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:hover:bg-amber-400/15",
                         overdue && "bg-destructive/10",
                         noNeed && "bg-muted/40 text-muted-foreground",
                         busy && "opacity-60",
