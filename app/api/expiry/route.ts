@@ -124,7 +124,9 @@ export async function POST(request: Request) {
     typeof body.month === "string" && /^\d{4}-\d{2}$/.test(body.month)
       ? body.month
       : monthOf(new Date());
-  const items = body.items.map(sanitizeItem).filter((i) => i.code || i.company);
+  const items = body.items
+    .map(sanitizeItem)
+    .filter((i: Record<string, string | number>) => i.code || i.company);
   const savedAt = new Date();
   const entry = { month, savedAt, summary: summarizeItems(items), items };
 
