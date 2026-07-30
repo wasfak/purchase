@@ -2,12 +2,55 @@
 
 import * as React from "react";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toDateStr, currentMonthStr, monthLabel } from "@/lib/dates";
+import {
+  CompanyExpiryModal,
+  DaysBadge,
+} from "@/components/expiry/company-expiry-modal";
+import { daysUntilExpiry, normalizeCompany, type ExpiryRow } from "@/lib/expiry";
+
+// The "Display exp" cell: when the saved expiry snapshot has items for this
+// company, a clickable pill (count + soonest) that opens the popup; otherwise a
+// muted dash so the column reads cleanly for companies with nothing expiring.
+function ExpiryCell({
+  rows,
+  today,
+  onOpen,
+}: {
+  rows: ExpiryRow[] | undefined;
+  today: Date;
+  onOpen: () => void;
+}) {
+  if (!rows || rows.length === 0)
+    return <span className="text-muted-foreground">—</span>;
+  // Soonest upcoming (not-yet-expired) expiry only.
+  let soonest = Infinity;
+  for (const r of rows) {
+    const d = daysUntilExpiry(r, today);
+    if (d >= 0 && d < soonest) soonest = d;
+  }
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+      title={`View ${rows.length} near-expiry item(s)`}
+    >
+      <AlarmClock className="size-3" />
+      {rows.length}
+      {soonest !== Infinity && (
+        <span className="opacity-80">
+          · <DaysBadge days={soonest} />
+        </span>
+      )}
+    </button>
+  );
+}
 
 type FieldType = "text" | "date" | "textarea" | "day" | "yesno";
 
@@ -240,6 +283,10 @@ function parseExcel(file: File): Promise<Record<string, string>[]> {
 export function OrdersBoard() {
   const [orders, setOrders] = React.useState<Order[]>([]);
   const [loading, setLoading] = React.useState(true);
+  // Saved expiry snapshot, for the per-company popup.
+  const [expiryItems, setExpiryItems] = React.useState<ExpiryRow[]>([]);
+  const [openExpiry, setOpenExpiry] = React.useState<string | null>(null);
+  const today = React.useMemo(() => new Date(), []);
   const [showForm, setShowForm] = React.useState(false);
   const [form, setForm] = React.useState<Record<string, string>>(emptyForm);
   const [submitting, setSubmitting] = React.useState(false);
@@ -367,6 +414,50 @@ export function OrdersBoard() {
       active = false;
     };
   }, []);
+
+  // Load the saved expiry snapshot so companies can show their expiring items.
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/expiry");
+        if (!res.ok) return;
+        const data = await res.json();
+        const items: ExpiryRow[] = (data.items ?? []).map(
+          (i: Record<string, unknown>) => ({
+            supplier: String(i.company ?? ""),
+            code: String(i.code ?? ""),
+            product: String(i.product ?? ""),
+            expiry: String(i.expiry ?? ""),
+            qty: Number(i.qty) || 0,
+            avgCost: Number(i.avgCost) || 0,
+            buyPrice: Number(i.buyPrice) || 0,
+            sellPrice: Number(i.sellPrice) || 0,
+            total: Number(i.total) || 0,
+            source: "",
+          }),
+        );
+        if (active) setExpiryItems(items);
+      } catch {
+        // No snapshot — companies just won't show an expiry pill.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Expiry items grouped by normalized company name.
+  const expiryByCompany = React.useMemo(() => {
+    const m = new Map<string, ExpiryRow[]>();
+    for (const it of expiryItems) {
+      const key = normalizeCompany(it.supplier);
+      const list = m.get(key);
+      if (list) list.push(it);
+      else m.set(key, [it]);
+    }
+    return m;
+  }, [expiryItems]);
 
   function openAdd() {
     setForm(emptyForm());
@@ -822,6 +913,9 @@ export function OrdersBoard() {
                       {col.label}
                     </th>
                   ))}
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
+                    Display exp
+                  </th>
                   <th className="px-3 py-2.5" />
                 </tr>
               </thead>
@@ -923,12 +1017,25 @@ export function OrdersBoard() {
                               >
                                 {cellValue(col, raw, overdue)}
                               </button>
+                            ) : col.key === "companyName" ? (
+                              <span dir="auto" className="whitespace-nowrap">
+                                {raw}
+                              </span>
                             ) : (
                               cellValue(col, raw, overdue)
                             )}
                           </td>
                         );
                       })}
+                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                        <ExpiryCell
+                          rows={expiryByCompany.get(
+                            normalizeCompany(order.companyName ?? ""),
+                          )}
+                          today={today}
+                          onOpen={() => setOpenExpiry(order.companyName)}
+                        />
+                      </td>
                       <td className="px-3 py-2 align-top">
                         <div className="flex items-center gap-2">
                         <button
@@ -975,6 +1082,15 @@ export function OrdersBoard() {
           </div>
           )}
         </>
+      )}
+
+      {openExpiry && (
+        <CompanyExpiryModal
+          company={openExpiry}
+          rows={expiryByCompany.get(normalizeCompany(openExpiry)) ?? []}
+          today={today}
+          onClose={() => setOpenExpiry(null)}
+        />
       )}
     </div>
   );

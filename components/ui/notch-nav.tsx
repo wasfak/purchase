@@ -12,6 +12,7 @@ import {
   ShoppingCart,
   Star,
   FileText,
+  AlarmClock,
 } from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
@@ -25,7 +26,8 @@ type IconName =
   | "dashboard"
   | "orders"
   | "review"
-  | "contracts";
+  | "contracts"
+  | "expiry";
 
 type Item = {
   value: string;
@@ -88,6 +90,7 @@ export function NotchNav({
     orders: ShoppingCart,
     review: Star,
     contracts: FileText,
+    expiry: AlarmClock,
   };
 
   const updateNotch = React.useCallback(() => {
