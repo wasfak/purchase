@@ -139,6 +139,26 @@ export async function loadDataset(id: string): Promise<SavedDataset | null> {
   return { ...meta, rows: blob?.rows ?? [] };
 }
 
+/** Load every saved sheet with its rows in a single transaction. Used by the
+ * cross-sheet code search so we don't open the DB once per sheet. */
+export async function loadAllDatasets(): Promise<SavedDataset[]> {
+  const db = await openDB();
+  const tx = db.transaction([STORE_META, STORE_ROWS], "readonly");
+  const metas = await reqResult(
+    tx.objectStore(STORE_META).getAll() as IDBRequest<SavedDatasetMeta[]>,
+  );
+  const blobs = await reqResult(
+    tx.objectStore(STORE_ROWS).getAll() as IDBRequest<
+      { id: string; rows: SavedRow[] }[]
+    >,
+  );
+  db.close();
+  const rowsById = new Map(blobs.map((b) => [b.id, b.rows]));
+  return metas
+    .sort((a, b) => b.savedAt - a.savedAt)
+    .map((meta) => ({ ...meta, rows: rowsById.get(meta.id) ?? [] }));
+}
+
 /** Remove a saved sheet and its rows. */
 export async function deleteDataset(id: string): Promise<void> {
   const db = await openDB();

@@ -15,6 +15,7 @@ import {
   Loader2,
   RotateCcw,
   Save,
+  Search,
   Trash2,
   TriangleAlert,
   Upload,
@@ -36,6 +37,7 @@ import {
   deleteDataset,
   getCodeStatuses,
   listDatasets,
+  loadAllDatasets,
   loadDataset,
   loadSession,
   mergeCodeStatuses,
@@ -47,6 +49,18 @@ import {
 } from "@/lib/local-store";
 
 type Row = Record<string, Cell>;
+
+// One matching row found when searching a code across all saved sheets.
+type CodeSearchHit = {
+  sheetId: string;
+  sheetName: string;
+  savedAt: number;
+  code: string;
+  itemName: string;
+  status: "done" | "ignored" | "pending";
+  statusAt?: number;
+  category?: string;
+};
 
 // App-managed columns appended after the sheet's own columns in the table.
 const MARKED_COL = "Status date"; // when the row was marked done/ignored
@@ -164,6 +178,14 @@ export function ReviewClient() {
     done: number;
     ignored: number;
   } | null>(null);
+
+  // Cross-sheet code search: look a code up across every saved sheet and show
+  // every hit regardless of its done/ignored status or the current filters.
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [searching, setSearching] = React.useState(false);
+  const [searchResults, setSearchResults] = React.useState<
+    CodeSearchHit[] | null
+  >(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -721,6 +743,65 @@ export function ReviewClient() {
     setCodesText("");
   };
 
+  // Search a code across every saved sheet and return every hit — done, ignored
+  // or still pending — so the user can see the full history of a code no matter
+  // which sheet it lived on or how it was handled. Matching is lenient (same
+  // normalization as elsewhere: invisible marks stripped, numeric codes compared
+  // as numbers). A partial (substring) match is also accepted so a few digits of
+  // a code find it.
+  const searchAllSheets = React.useCallback(async () => {
+    const raw = searchQuery.trim();
+    if (!raw) {
+      toast.error("Type a code to search for.");
+      return;
+    }
+    setSearching(true);
+    try {
+      const wanted = normCode(raw);
+      const wantedLoose = normalizeHeader(stringify(raw)).toLowerCase();
+      const datasets = await loadAllDatasets();
+      const hits: CodeSearchHit[] = [];
+      for (const ds of datasets) {
+        const codeIdx = ds.columns.findIndex(
+          (c) => normalizeHeader(c) === "code",
+        );
+        if (codeIdx === -1) continue;
+        const nameIdx = ds.columns.findIndex(
+          (c) => normalizeHeader(c) === normalizeHeader("اسم الصنف"),
+        );
+        ds.rows.forEach((sr) => {
+          const cellCode = normCode(sr.values[codeIdx]);
+          const cellLoose = normalizeHeader(
+            stringify(sr.values[codeIdx]),
+          ).toLowerCase();
+          const isMatch =
+            (wanted !== "" && cellCode === wanted) ||
+            (wantedLoose !== "" && cellLoose.includes(wantedLoose));
+          if (!isMatch) return;
+          hits.push({
+            sheetId: ds.id,
+            sheetName: ds.name,
+            savedAt: ds.savedAt,
+            code: stringify(sr.values[codeIdx]),
+            itemName: nameIdx === -1 ? "" : stringify(sr.values[nameIdx]),
+            status: sr.completed ? "done" : sr.ignored ? "ignored" : "pending",
+            statusAt: sr.statusAt,
+            category: sr.category,
+          });
+        });
+      }
+      hits.sort((a, b) => b.savedAt - a.savedAt);
+      setSearchResults(hits);
+      if (hits.length === 0) {
+        toast.info("No saved sheet has that code.");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Search failed");
+    } finally {
+      setSearching(false);
+    }
+  }, [searchQuery]);
+
   // Make the current sheet the baseline that future sheets compare against:
   // wipe the accumulated history, then re-seed it from this sheet's marks. Also
   // re-enables linking so the next upload actually compares against it.
@@ -939,6 +1020,114 @@ export function ReviewClient() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {saved.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-3">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+            <Search className="size-4 text-muted-foreground" />
+            Search a code across all sheets
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void searchAllSheets();
+              }}
+              placeholder="Type a code — e.g. 143354"
+              className="h-9 min-w-48 flex-1 rounded-lg border border-border bg-background px-3 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+            />
+            <Button onClick={() => void searchAllSheets()} disabled={searching}>
+              {searching ? <Loader2 className="animate-spin" /> : <Search />}
+              Search
+            </Button>
+            {searchResults !== null && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setSearchResults(null);
+                  setSearchQuery("");
+                }}
+              >
+                <X /> Clear
+              </Button>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Finds the code in every saved sheet — including rows already marked
+            done or ignored.
+          </p>
+
+          {searchResults !== null && (
+            <div className="mt-3">
+              {searchResults.length === 0 ? (
+                <p className="rounded-lg bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                  No saved sheet contains that code.
+                </p>
+              ) : (
+                <>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    {searchResults.length} match
+                    {searchResults.length === 1 ? "" : "es"} across your sheets
+                  </p>
+                  <ul className="divide-y divide-border/60">
+                    {searchResults.map((hit, i) => (
+                      <li
+                        key={`${hit.sheetId}-${hit.code}-${i}`}
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2"
+                      >
+                        <span className="font-mono text-sm font-semibold">
+                          {hit.code}
+                        </span>
+                        {hit.itemName && (
+                          <span className="min-w-0 flex-1 truncate text-sm">
+                            {hit.itemName}
+                          </span>
+                        )}
+                        <span
+                          className={cn(
+                            "rounded-full px-2 py-0.5 text-xs font-semibold",
+                            hit.status === "done" &&
+                              "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+                            hit.status === "ignored" &&
+                              "bg-muted text-muted-foreground line-through",
+                            hit.status === "pending" &&
+                              "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+                          )}
+                        >
+                          {hit.status === "done"
+                            ? "Done"
+                            : hit.status === "ignored"
+                              ? "Ignored"
+                              : "Pending"}
+                        </span>
+                        {hit.category && (
+                          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                            {hit.category}
+                          </span>
+                        )}
+                        {hit.statusAt && (
+                          <span className="text-xs tabular-nums text-muted-foreground">
+                            {formatDate(hit.statusAt)}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void openSaved(hit.sheetId)}
+                          className="ml-auto truncate text-xs font-medium text-primary hover:underline"
+                          title={`Open “${hit.sheetName}”`}
+                        >
+                          {hit.sheetName}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
