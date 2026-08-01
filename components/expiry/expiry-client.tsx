@@ -123,7 +123,15 @@ function Delta({ curr, prev }: { curr: number; prev: number | null }) {
 
 // The saved-month history: each month's totals with a delta against the month
 // before it, so a rising or falling value at risk is obvious at a glance.
-function MonthlyTrend({ months }: { months: MonthSummary[] }) {
+function MonthlyTrend({
+  months,
+  onSelect,
+  loadingMonth,
+}: {
+  months: MonthSummary[];
+  onSelect: (month: string) => void;
+  loadingMonth: string | null;
+}) {
   if (months.length === 0) return null;
   const maxCost = Math.max(...months.map((m) => m.summary.costValue), 1);
   // Newest first for reading; each row compares to the chronologically prior month.
@@ -167,10 +175,17 @@ function MonthlyTrend({ months }: { months: MonthSummary[] }) {
               return (
                 <tr
                   key={m.month}
-                  className="border-b border-border last:border-0"
+                  onClick={() => onSelect(m.month)}
+                  className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/40"
+                  title={`View ${monthLabel(m.month)}`}
                 >
                   <td className="whitespace-nowrap px-3 py-2 font-medium">
-                    {monthLabel(m.month)}
+                    <span className="inline-flex items-center gap-2">
+                      {monthLabel(m.month)}
+                      {loadingMonth === m.month && (
+                        <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                      )}
+                    </span>
                   </td>
                   <td className="px-3 py-2 text-center tabular-nums">
                     {int(m.summary.items)}
@@ -210,6 +225,185 @@ function MonthlyTrend({ months }: { months: MonthSummary[] }) {
   );
 }
 
+// A saved month opened from the trend table: its headline totals and a
+// company breakdown, with each company clickable for its item detail.
+function MonthDetailModal({
+  month,
+  rows,
+  savedAt,
+  today,
+  onClose,
+}: {
+  month: string;
+  rows: ExpiryRow[];
+  savedAt: string | null;
+  today: Date;
+  onClose: () => void;
+}) {
+  const [openCompany, setOpenCompany] = React.useState<string | null>(null);
+  const summary = React.useMemo(
+    () => summarizeExpiry(rows, today),
+    [rows, today],
+  );
+  const companies = React.useMemo(
+    () => groupByCompany(rows, today),
+    [rows, today],
+  );
+  const activeGroup = companies.find((c) => c.company === openCompany) ?? null;
+  const maxCompanyValue = Math.max(...companies.map((c) => c.costValue), 1);
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
+        onClick={onClose}
+      >
+        <div
+          className="w-full max-w-4xl rounded-xl border border-border bg-card p-5 shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="mb-4 flex items-start justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold">{monthLabel(month)}</h2>
+              <p className="text-xs text-muted-foreground">
+                Saved snapshot
+                {savedAt && <> · {new Date(savedAt).toLocaleString()}</>}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Close"
+            >
+              <X className="size-5" />
+            </button>
+          </div>
+
+          {rows.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              No items saved for {monthLabel(month)}.
+            </p>
+          ) : (
+            <>
+              <div className="mb-4 grid gap-3 sm:grid-cols-4">
+                <StatCard
+                  label="Items"
+                  value={int(summary.items)}
+                  hint={`${int(summary.units)} units`}
+                />
+                <StatCard
+                  label="Cost value"
+                  value={money(summary.costValue)}
+                />
+                <StatCard
+                  label="Retail value"
+                  value={money(summary.retailValue)}
+                />
+                <StatCard
+                  label="Expired"
+                  value={int(
+                    summary.buckets.find((b) => b.key === "expired")!.items,
+                  )}
+                  hint={money(
+                    summary.buckets.find((b) => b.key === "expired")!.costValue,
+                  )}
+                />
+              </div>
+
+              <div className="overflow-auto rounded-xl border border-border">
+                <table className="w-full border-collapse text-sm">
+                  <thead className="bg-card">
+                    <tr className="text-center">
+                      <th className="border-b border-border px-3 py-2 text-right font-semibold">
+                        Company
+                      </th>
+                      <th className="border-b border-border px-3 py-2 font-semibold">
+                        Items
+                      </th>
+                      <th className="border-b border-border px-3 py-2 font-semibold">
+                        Units
+                      </th>
+                      <th className="border-b border-border px-3 py-2 font-semibold">
+                        Soonest
+                      </th>
+                      <th className="border-b border-border px-3 py-2 font-semibold">
+                        Cost value
+                      </th>
+                      <th className="border-b border-border px-3 py-2 text-start font-semibold">
+                        Share
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {companies.map((c) => (
+                      <tr
+                        key={c.company}
+                        onClick={() => setOpenCompany(c.company)}
+                        className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/40"
+                      >
+                        <td
+                          className="px-3 py-2 text-right font-medium"
+                          dir="rtl"
+                        >
+                          {c.company}
+                        </td>
+                        <td className="px-3 py-2 text-center tabular-nums">
+                          {int(c.items)}
+                        </td>
+                        <td className="px-3 py-2 text-center tabular-nums">
+                          {int(c.units)}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          {c.nearestDays === null ? (
+                            <span className="text-muted-foreground/50">—</span>
+                          ) : (
+                            <DaysBadge days={c.nearestDays} />
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center font-semibold tabular-nums">
+                          {money(c.costValue)}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="h-2 w-24 shrink-0 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-primary"
+                                style={{
+                                  width: `${(c.costValue / maxCompanyValue) * 100}%`,
+                                }}
+                              />
+                            </div>
+                            <span className="tabular-nums text-xs text-muted-foreground">
+                              {summary.costValue > 0
+                                ? ((c.costValue / summary.costValue) * 100).toFixed(1)
+                                : "0.0"}
+                              %
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {activeGroup && (
+        <CompanyExpiryModal
+          company={activeGroup.company}
+          rows={activeGroup.rows}
+          today={today}
+          onClose={() => setOpenCompany(null)}
+        />
+      )}
+    </>
+  );
+}
+
 export function ExpiryClient() {
   const [rows, setRows] = React.useState<ExpiryRow[]>([]);
   const [files, setFiles] = React.useState<string[]>([]);
@@ -224,6 +418,13 @@ export function ExpiryClient() {
   const [saveMonth, setSaveMonth] = React.useState(currentMonthStr);
   // The saved-month history that powers the trend view.
   const [history, setHistory] = React.useState<MonthSummary[]>([]);
+  // A saved month opened from the trend table for its full breakdown.
+  const [monthView, setMonthView] = React.useState<{
+    month: string;
+    rows: ExpiryRow[];
+    savedAt: string | null;
+  } | null>(null);
+  const [monthLoading, setMonthLoading] = React.useState<string | null>(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -291,6 +492,35 @@ export function ExpiryClient() {
   React.useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  // Fetch a saved month's items and open its breakdown modal.
+  const openMonth = React.useCallback(async (month: string) => {
+    setMonthLoading(month);
+    try {
+      const res = await fetch(`/api/expiry?month=${month}`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const rows: ExpiryRow[] = (data.items ?? []).map(
+        (i: Record<string, unknown>) => ({
+          supplier: String(i.company ?? ""),
+          code: String(i.code ?? ""),
+          product: String(i.product ?? ""),
+          expiry: String(i.expiry ?? ""),
+          qty: Number(i.qty) || 0,
+          avgCost: Number(i.avgCost) || 0,
+          buyPrice: Number(i.buyPrice) || 0,
+          sellPrice: Number(i.sellPrice) || 0,
+          total: Number(i.total) || 0,
+          source: "",
+        }),
+      );
+      setMonthView({ month, rows, savedAt: data.savedAt ?? null });
+    } catch {
+      toast.error("Couldn't load that month");
+    } finally {
+      setMonthLoading(null);
+    }
+  }, []);
 
   const addFiles = React.useCallback(
     async (incoming: File[]) => {
@@ -493,8 +723,13 @@ export function ExpiryClient() {
         </div>
       )}
 
-      {/* Saved-month history — visible even before a new file is loaded. */}
-      <MonthlyTrend months={history} />
+      {/* Saved-month history — visible even before a new file is loaded.
+          Click a month to open its full breakdown. */}
+      <MonthlyTrend
+        months={history}
+        onSelect={openMonth}
+        loadingMonth={monthLoading}
+      />
 
       {hasData && (
         <>
@@ -693,6 +928,16 @@ export function ExpiryClient() {
           rows={activeGroup.rows}
           today={today}
           onClose={() => setOpenCompany(null)}
+        />
+      )}
+
+      {monthView && (
+        <MonthDetailModal
+          month={monthView.month}
+          rows={monthView.rows}
+          savedAt={monthView.savedAt}
+          today={today}
+          onClose={() => setMonthView(null)}
         />
       )}
     </div>

@@ -120,6 +120,20 @@ function displayDate(v: string): string {
   return v;
 }
 
+// Best guess at which month an untagged order belongs to, as "YYYY-MM".
+// Prefers the dates that reflect when the work actually happened, falling back
+// to the created date so an order with no dates still lands somewhere sensible.
+// Returns "" when nothing usable is found (leave it unassigned).
+function monthFromOrder(o: Order): string {
+  for (const key of ["dateOfDoing", "sendDate", "inReview", "finished"]) {
+    const v = (o[key] ?? "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v.slice(0, 7);
+  }
+  const created = (o.createdAt ?? "").trim();
+  const m = created.match(/^(\d{4}-\d{2})/);
+  return m ? m[1] : "";
+}
+
 function displayDay(v: string): string {
   const n = parseInt(v, 10);
   if (!n || n < 1 || n > 31) return "";
@@ -160,6 +174,7 @@ const DUE_SOON_DAYS = 4;
 // this week still lights up amber. e.g. today is the 27th and an order's day is
 // the 28th → due tomorrow → amber, even while viewing next month.
 function isDueSoon(order: Order): boolean {
+  if (isNoNeed(order)) return false; // nothing to do this month
   const day = parseInt(order.orderDay ?? "", 10);
   if (!day || day < 1 || day > 31) return false;
   if ((order.dateOfDoing ?? "").trim()) return false; // already done
@@ -322,6 +337,7 @@ export function OrdersBoard() {
     return currentMonthStr();
   });
   const [carrying, setCarrying] = React.useState(false);
+  const [filing, setFiling] = React.useState(false);
 
   React.useEffect(() => {
     try {
@@ -332,17 +348,23 @@ export function OrdersBoard() {
   }, [month]);
 
   // Orders created before months existed have an empty month; treat those as
-  // belonging to the current month so nothing silently disappears.
+  // belonging to the current month for month-level logic (carry-over, dedup).
   const thisMonth = React.useMemo(() => currentMonthStr(), []);
   const effectiveMonth = React.useCallback(
     (o: Order) => (o.month?.trim() ? o.month.trim() : thisMonth),
     [thisMonth],
   );
 
-  // Only the selected month's rows are shown in the table.
+  // The table shows the selected month's rows, plus any still-unassigned order
+  // (blank month) — those stay visible in every month until the user assigns
+  // them one, so nothing silently disappears when switching months.
   const visibleOrders = React.useMemo(
-    () => orders.filter((o) => effectiveMonth(o) === month),
-    [orders, effectiveMonth, month],
+    () =>
+      orders.filter((o) => {
+        const m = o.month?.trim();
+        return !m || m === month;
+      }),
+    [orders, month],
   );
 
   // The rows actually rendered: the month's orders, optionally narrowed by the
@@ -376,6 +398,13 @@ export function OrdersBoard() {
     ].sort();
     return months.length ? months[months.length - 1] : null;
   }, [orders, effectiveMonth, month]);
+
+  // Orders that still have no month tag — they float into every month view
+  // until filed. This drives the "File unassigned" action.
+  const unassignedOrders = React.useMemo(
+    () => orders.filter((o) => !(o.month ?? "").trim()),
+    [orders],
+  );
 
   const setBusy = (id: string, on: boolean) =>
     setBusyIds((prev) => {
@@ -574,6 +603,40 @@ export function OrdersBoard() {
     }
   }
 
+  // File every untagged order into the month its dates point to, so each lands
+  // in its real month instead of floating across all of them. Safe to re-run:
+  // it only touches orders with a blank month.
+  async function fileUnassigned() {
+    const targets = unassignedOrders
+      .map((o) => ({ id: o._id, month: monthFromOrder(o) }))
+      .filter((t) => t.month);
+    if (targets.length === 0) {
+      toast.info("No unassigned orders could be dated.");
+      return;
+    }
+    setFiling(true);
+    try {
+      const results = await Promise.all(
+        targets.map((t) =>
+          fetch(`/api/orders/${t.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ month: t.month }),
+          }).then((r) => r.ok),
+        ),
+      );
+      const ok = results.filter(Boolean).length;
+      await load();
+      if (ok === targets.length) toast.success(`Filed ${ok} order(s) by date`);
+      else toast.warning(`Filed ${ok} of ${targets.length} — some failed`);
+    } catch {
+      toast.error("Couldn't file unassigned orders");
+      await load();
+    } finally {
+      setFiling(false);
+    }
+  }
+
   // Flip the "no need this month" flag on an order and persist it.
   function toggleNoNeed(order: Order) {
     commitCell(order._id, "noNeed", isNoNeed(order) ? "" : "yes");
@@ -726,11 +789,24 @@ export function OrdersBoard() {
           <option value="dueSoon">Due soon</option>
         </select>
       </label>
+      {unassignedOrders.length > 0 && (
+        <Button
+          type="button"
+          variant="outline"
+          className="ml-auto border-amber-500/60 text-amber-700 dark:text-amber-400"
+          disabled={filing}
+          onClick={fileUnassigned}
+          title="Move each order with no month into the month its dates point to"
+        >
+          {filing ? <Loader2 className="animate-spin" /> : <Calendar />}
+          File {unassignedOrders.length} unassigned
+        </Button>
+      )}
       {carrySourceMonth && (
         <Button
           type="button"
           variant="outline"
-          className="ml-auto"
+          className={cn(unassignedOrders.length === 0 && "ml-auto")}
           disabled={carrying}
           onClick={carryOver}
           title={`Copy companies from ${monthLabel(carrySourceMonth)} into ${monthLabel(month)}, with a clean sheet`}
@@ -880,7 +956,9 @@ export function OrdersBoard() {
             {OVERDUE_GRACE_DAYS} days overdue and not yet done, and green once you
             fill in its date of doing. Company name is fixed. Switch months above
             to review a past month or start a new one — &ldquo;Carry over&rdquo;
-            copies the companies into a clean sheet.
+            copies the companies into a clean sheet. Orders with no month yet
+            (amber month box on the right) show in every month until you pick one
+            for them.
           </p>
           {displayedOrders.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border bg-card/50 p-10 text-center">
@@ -1018,8 +1096,16 @@ export function OrdersBoard() {
                                 {cellValue(col, raw, overdue)}
                               </button>
                             ) : col.key === "companyName" ? (
-                              <span dir="auto" className="whitespace-nowrap">
-                                {raw}
+                              <span className="flex items-center gap-2">
+                                <span dir="auto" className="whitespace-nowrap">
+                                  {raw}
+                                </span>
+                                {noNeed && (
+                                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                                    <Ban className="size-3" />
+                                    No need
+                                  </span>
+                                )}
                               </span>
                             ) : (
                               cellValue(col, raw, overdue)
@@ -1038,6 +1124,25 @@ export function OrdersBoard() {
                       </td>
                       <td className="px-3 py-2 align-top">
                         <div className="flex items-center gap-2">
+                        <input
+                          type="month"
+                          value={order.month?.trim() || ""}
+                          disabled={busy}
+                          onChange={(e) =>
+                            commitCell(order._id, "month", e.target.value)
+                          }
+                          title={
+                            order.month?.trim()
+                              ? "Change which month this order belongs to"
+                              : "Unassigned — pick a month to file this order"
+                          }
+                          className={cn(
+                            "h-8 rounded border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50",
+                            order.month?.trim()
+                              ? "border-border"
+                              : "border-amber-500/60 text-amber-700 dark:text-amber-400",
+                          )}
+                        />
                         <button
                           type="button"
                           onClick={() => toggleNoNeed(order)}

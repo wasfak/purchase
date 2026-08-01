@@ -71,7 +71,22 @@ export async function GET(request: Request) {
   }
 
   await connectDB();
-  const wantsHistory = new URL(request.url).searchParams.get("history");
+  const params = new URL(request.url).searchParams;
+  const wantsHistory = params.get("history");
+  const wantsMonth = params.get("month");
+
+  // A specific saved month's items (drives the clickable trend rows).
+  if (wantsMonth && /^\d{4}-\d{2}$/.test(wantsMonth)) {
+    const snap = await ExpirySnapshot.findOne({ ownerId: userId }).lean<{
+      months?: MonthSnapshotDoc[];
+    }>();
+    const found = (snap?.months ?? []).find((m) => m.month === wantsMonth);
+    return NextResponse.json({
+      items: found?.items ?? [],
+      savedAt: found?.savedAt ?? null,
+      month: wantsMonth,
+    });
+  }
 
   if (wantsHistory) {
     const snap = await ExpirySnapshot.findOne(
