@@ -31,6 +31,7 @@ import {
   type Cell,
   type DataRow,
 } from "@/lib/dataset";
+import { normalizeCompany } from "@/lib/expiry";
 import {
   clearCodeStatuses,
   clearSession,
@@ -68,9 +69,32 @@ const LATE_COL = "Late"; // ordered this long ago but still showing up
 const CATEGORY_COL = "Category"; // pharma / sena / sherktha
 const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha"] as const;
 
+// Column pulled from the Orders tab by matching this row's supplier (الموردين)
+// to a company there — so you can tell, per row, whether that company's order
+// was recently sent (within the window) and shouldn't be re-ordered.
+const DOING_COL = "Date of doing"; // the recent send date, else blank
+
+// Header keys in the sheet that name the supplier/company for a row, matched
+// loosely (normalized) so either the Arabic "الموردين" or an English label works.
+const SUPPLIER_HEADERS = ["الموردين", "المورد", "supplier", "company"];
+
+// What the Orders tab knows about one company: the date its order was done
+// (empty string = never sent).
+type OrderInfo = { dateOfDoing: string };
+
 // A row still present this many days after it was marked done was ordered but
 // never arrived — flag it so it can be chased up.
 const LATE_AFTER_DAYS = 4;
+
+// How far back from the sheet's upload date an order's "date of doing" may fall
+// and still count as sent for this review cycle. A send older than this is
+// stale (a previous cycle), so it reads as "Not sent" here.
+const SENT_WINDOW_DAYS = 7;
+
+// Present a stored "YYYY-MM-DD" date (as used by the Orders tab) in the local
+// locale format; anything that isn't that shape is shown as-is.
+const displayDate = (v: string): string =>
+  /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00:00`).toLocaleDateString() : v;
 
 // Local date as YYYY-MM-DD — human-readable and sorts/filters correctly as text.
 const formatDate = (ms: number): string => {
@@ -187,7 +211,52 @@ export function ReviewClient() {
     CodeSearchHit[] | null
   >(null);
 
+  // Orders pulled from the Orders tab, keyed by normalized company name, so each
+  // review row can show whether that supplier's order has been sent. When a
+  // company has more than one monthly order, the newest wins (the API returns
+  // them newest-first, so the first seen for a company is the most recent).
+  const [orderInfo, setOrderInfo] = React.useState<Map<string, OrderInfo>>(
+    () => new Map(),
+  );
+
+  // Epoch ms of when the current sheet was uploaded — the reference point for
+  // the "sent within 7 days" window. Null falls back to now (e.g. a legacy
+  // session with no stored upload time).
+  const [uploadedAt, setUploadedAt] = React.useState<number | null>(null);
+
   const inputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/orders");
+        if (!res.ok) return;
+        const data = await res.json();
+        // A company can have several order rows (one per month), and carrying a
+        // month over leaves the new row's date of doing blank. To answer "did I
+        // already send this recently?", take the MOST RECENT actual send across
+        // every row — otherwise a blank carried-over row would hide a real send.
+        const map = new Map<string, OrderInfo>();
+        for (const o of (data.orders ?? []) as Record<string, string>[]) {
+          const key = normalizeCompany(o.companyName ?? "");
+          if (!key) continue;
+          const doing = (o.dateOfDoing ?? "").trim();
+          const existing = map.get(key);
+          // "YYYY-MM-DD" sorts lexically, so `>` is a real recency test.
+          if (!existing) map.set(key, { dateOfDoing: doing });
+          else if (doing && (!existing.dateOfDoing || doing > existing.dateOfDoing))
+            existing.dateOfDoing = doing;
+        }
+        if (active) setOrderInfo(map);
+      } catch {
+        // Orders unavailable — the order columns just read as a dash.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const dataRows = React.useMemo<DataRow[]>(
     () => rows.map((r, i) => ({ ...r, __id: String(i) })),
@@ -205,13 +274,52 @@ export function ReviewClient() {
     [dataRows, hideIgnored, hideDone, ignored, completed],
   );
 
+  // The actual header key that names the supplier/company for each row, so we
+  // can look its order up in the Orders tab. Matched against a few aliases.
+  const supplierCol = React.useMemo(() => {
+    const want = SUPPLIER_HEADERS.map((h) => normalizeCompany(h));
+    return columns.find((c) => want.includes(normalizeCompany(c)));
+  }, [columns]);
+
+  // The Orders-tab record for a given sheet row, matched by its supplier name.
+  // Undefined when the row has no supplier or that company isn't in Orders.
+  const orderFor = React.useCallback(
+    (row: DataRow): OrderInfo | undefined => {
+      if (!supplierCol) return undefined;
+      const key = normalizeCompany(stringify(row[supplierCol]));
+      return key ? orderInfo.get(key) : undefined;
+    },
+    [supplierCol, orderInfo],
+  );
+
+  // True when a "date of doing" (YYYY-MM-DD) falls in the [upload − 7 days,
+  // upload] window — i.e. the order was sent as part of this review cycle. An
+  // empty or out-of-window date is not counted as sent.
+  const isSentInWindow = React.useCallback(
+    (dateOfDoing: string): boolean => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfDoing)) return false;
+      const doingMs = new Date(`${dateOfDoing}T00:00:00`).getTime();
+      const diff = daysSince(doingMs, uploadedAt ?? Date.now());
+      return diff >= 0 && diff <= SENT_WINDOW_DAYS;
+    },
+    [uploadedAt],
+  );
+
   // Columns actually rendered by the table: the sheet's columns plus our
   // app-managed ones (mark date + late flag + category). Kept separate from
   // `columns` so export / save / code-history logic still only see the sheet's
   // own columns.
   const tableColumns = React.useMemo(
-    () => [...columns, MARKED_COL, LATE_COL, CATEGORY_COL],
-    [columns],
+    () => [
+      ...columns,
+      // Only surface the Orders column when the sheet actually has a supplier
+      // column to match on — otherwise it'd be all dashes.
+      ...(supplierCol ? [DOING_COL] : []),
+      MARKED_COL,
+      LATE_COL,
+      CATEGORY_COL,
+    ],
+    [columns, supplierCol],
   );
 
   // Re-read the clock hourly so a tab left open overnight starts flagging rows
@@ -243,14 +351,20 @@ export function ReviewClient() {
     () =>
       visibleDataRows.map((r) => {
         const at = statusAt.get(r.__id);
+        // The date goes into the row as plain text so the table can
+        // filter/sort/search it: the date itself when it was sent within the
+        // window, and "" otherwise (no match, or an out-of-window / absent send).
+        const info = orderFor(r);
         return {
           ...r,
+          [DOING_COL]:
+            info && isSentInWindow(info.dateOfDoing) ? info.dateOfDoing : "",
           [MARKED_COL]: at ? formatDate(at) : "",
           [LATE_COL]: isLate(r.__id) ? "Late" : "",
           [CATEGORY_COL]: category.get(r.__id) ?? "",
         };
       }),
-    [visibleDataRows, statusAt, category, isLate],
+    [visibleDataRows, statusAt, category, isLate, orderFor, isSentInWindow],
   );
 
   const lateCount = React.useMemo(
@@ -318,6 +432,7 @@ export function ReviewClient() {
           setStatusAt(new Map(session.statusAt ?? []));
           setCategory(new Map(session.category ?? []));
           setCurrentId(session.currentId);
+          setUploadedAt(session.uploadedAt ?? null);
         }
       } catch {
         // Ignore — a missing/unreadable session just starts empty.
@@ -347,6 +462,7 @@ export function ReviewClient() {
         statusAt: [...statusAt],
         category: [...category],
         currentId,
+        uploadedAt: uploadedAt ?? undefined,
       }).catch(() => {});
     }, 400);
     return () => clearTimeout(handle);
@@ -361,6 +477,7 @@ export function ReviewClient() {
     statusAt,
     category,
     currentId,
+    uploadedAt,
   ]);
 
 
@@ -411,7 +528,9 @@ export function ReviewClient() {
         setStatusAt(new Map());
         setCategory(new Map());
         setCurrentId(null);
+        setUploadedAt(null);
       } else {
+        const uploadedNow = Date.now();
         const cols = detectColumns(data);
 
         // Carry over done/ignored status, the date it was set, and the category
@@ -441,6 +560,7 @@ export function ReviewClient() {
         setIgnored(carriedIgnored);
         setStatusAt(carriedAt);
         setCategory(carriedCat);
+        setUploadedAt(uploadedNow);
         setCarried({ done: carriedDone.size, ignored: carriedIgnored.size });
 
         if (carriedDone.size + carriedIgnored.size > 0) {
@@ -477,6 +597,7 @@ export function ReviewClient() {
             columns: cols,
             numericColumns: [...numericColumns],
             rows: savedRows,
+            uploadedAt: uploadedNow,
           });
           setCurrentId(newId);
           await refreshSaved();
@@ -630,6 +751,8 @@ export function ReviewClient() {
         columns,
         numericColumns: [...numericCols],
         rows: savedRows,
+        // Keep the original upload date across re-saves.
+        uploadedAt: uploadedAt ?? undefined,
       });
       setCurrentId(id);
       await refreshSaved();
@@ -920,6 +1043,8 @@ export function ReviewClient() {
       setFileName(ds.fileName);
       setName(ds.name);
       setCurrentId(ds.id);
+      // Fall back to the saved-at time for older sheets with no upload stamp.
+      setUploadedAt(ds.uploadedAt ?? ds.savedAt);
       setCarried(null);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that sheet");
@@ -951,6 +1076,7 @@ export function ReviewClient() {
     setName("");
     setError(null);
     setCurrentId(null);
+    setUploadedAt(null);
     setCarried(null);
     if (inputRef.current) inputRef.current.value = "";
   };
@@ -1384,6 +1510,19 @@ export function ReviewClient() {
                       </option>
                     ))}
                   </select>
+                );
+              }
+              if (col === DOING_COL) {
+                const info = orderFor(row);
+                // Only an in-window send is shown; anything else (no match, or a
+                // stale/absent send outside the 7-day window) reads as a dash.
+                if (!info || !isSentInWindow(info.dateOfDoing))
+                  return <span className="text-muted-foreground/40">—</span>;
+                return (
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                    <CircleCheck className="size-3" />
+                    {displayDate(info.dateOfDoing)}
+                  </span>
                 );
               }
               if (col === LATE_COL) {

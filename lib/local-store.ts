@@ -33,7 +33,9 @@ export type SavedDatasetMeta = {
   id: string;
   name: string;
   fileName: string;
-  savedAt: number; // epoch ms
+  savedAt: number; // epoch ms — last time the sheet was written
+  /** Epoch ms of when the sheet was first uploaded; preserved across re-saves. */
+  uploadedAt?: number;
   columns: string[];
   numericColumns: string[];
   rowCount: number;
@@ -90,14 +92,18 @@ export async function saveDataset(input: {
   columns: string[];
   numericColumns: string[];
   rows: SavedRow[];
+  /** Original upload time; defaults to now when the sheet is first saved. */
+  uploadedAt?: number;
 }): Promise<string> {
   const db = await openDB();
   const id = input.id ?? crypto.randomUUID();
+  const now = Date.now();
   const meta: SavedDatasetMeta = {
     id,
     name: input.name.trim() || input.fileName || "Untitled sheet",
     fileName: input.fileName,
-    savedAt: Date.now(),
+    savedAt: now,
+    uploadedAt: input.uploadedAt ?? now,
     columns: input.columns,
     numericColumns: input.numericColumns,
     rowCount: input.rows.length,
@@ -179,6 +185,8 @@ export type WorkingSession = {
   completed: string[];
   ignored: string[];
   currentId: string | null;
+  /** Epoch ms of when the current sheet was uploaded. */
+  uploadedAt?: number;
   /** Per-row-id epoch ms of when it was marked done/ignored. */
   statusAt?: [string, number][];
   /** Per-row-id category pick (pharma / sena / sherktha). */
