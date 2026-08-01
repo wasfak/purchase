@@ -72,15 +72,15 @@ const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha"] as const;
 // Column pulled from the Orders tab by matching this row's supplier (الموردين)
 // to a company there — so you can tell, per row, whether that company's order
 // was recently sent (within the window) and shouldn't be re-ordered.
-const DOING_COL = "Date of doing"; // the recent send date, else blank
+const SEND_COL = "Send date"; // the recent send date, else blank
 
 // Header keys in the sheet that name the supplier/company for a row, matched
 // loosely (normalized) so either the Arabic "الموردين" or an English label works.
 const SUPPLIER_HEADERS = ["الموردين", "المورد", "supplier", "company"];
 
-// What the Orders tab knows about one company: the date its order was done
+// What the Orders tab knows about one company: the date its order was sent
 // (empty string = never sent).
-type OrderInfo = { dateOfDoing: string };
+type OrderInfo = { sendDate: string };
 
 // A row still present this many days after it was marked done was ordered but
 // never arrived — flag it so it can be chased up.
@@ -234,19 +234,19 @@ export function ReviewClient() {
         if (!res.ok) return;
         const data = await res.json();
         // A company can have several order rows (one per month), and carrying a
-        // month over leaves the new row's date of doing blank. To answer "did I
+        // month over leaves the new row's send date blank. To answer "did I
         // already send this recently?", take the MOST RECENT actual send across
         // every row — otherwise a blank carried-over row would hide a real send.
         const map = new Map<string, OrderInfo>();
         for (const o of (data.orders ?? []) as Record<string, string>[]) {
           const key = normalizeCompany(o.companyName ?? "");
           if (!key) continue;
-          const doing = (o.dateOfDoing ?? "").trim();
+          const sent = (o.sendDate ?? "").trim();
           const existing = map.get(key);
           // "YYYY-MM-DD" sorts lexically, so `>` is a real recency test.
-          if (!existing) map.set(key, { dateOfDoing: doing });
-          else if (doing && (!existing.dateOfDoing || doing > existing.dateOfDoing))
-            existing.dateOfDoing = doing;
+          if (!existing) map.set(key, { sendDate: sent });
+          else if (sent && (!existing.sendDate || sent > existing.sendDate))
+            existing.sendDate = sent;
         }
         if (active) setOrderInfo(map);
       } catch {
@@ -314,7 +314,7 @@ export function ReviewClient() {
       ...columns,
       // Only surface the Orders column when the sheet actually has a supplier
       // column to match on — otherwise it'd be all dashes.
-      ...(supplierCol ? [DOING_COL] : []),
+      ...(supplierCol ? [SEND_COL] : []),
       MARKED_COL,
       LATE_COL,
       CATEGORY_COL,
@@ -357,8 +357,8 @@ export function ReviewClient() {
         const info = orderFor(r);
         return {
           ...r,
-          [DOING_COL]:
-            info && isSentInWindow(info.dateOfDoing) ? info.dateOfDoing : "",
+          [SEND_COL]:
+            info && isSentInWindow(info.sendDate) ? info.sendDate : "",
           [MARKED_COL]: at ? formatDate(at) : "",
           [LATE_COL]: isLate(r.__id) ? "Late" : "",
           [CATEGORY_COL]: category.get(r.__id) ?? "",
@@ -1512,16 +1512,16 @@ export function ReviewClient() {
                   </select>
                 );
               }
-              if (col === DOING_COL) {
+              if (col === SEND_COL) {
                 const info = orderFor(row);
                 // Only an in-window send is shown; anything else (no match, or a
                 // stale/absent send outside the 7-day window) reads as a dash.
-                if (!info || !isSentInWindow(info.dateOfDoing))
+                if (!info || !isSentInWindow(info.sendDate))
                   return <span className="text-muted-foreground/40">—</span>;
                 return (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
                     <CircleCheck className="size-3" />
-                    {displayDate(info.dateOfDoing)}
+                    {displayDate(info.sendDate)}
                   </span>
                 );
               }
