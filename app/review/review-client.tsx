@@ -400,6 +400,8 @@ export function ReviewClient() {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json<Row>(ws, { defval: null });
 
+      const displayName = file.name.replace(/\.[^.]+$/, "");
+
       if (data.length === 0) {
         setError("The sheet appears to be empty.");
         setRows([]);
@@ -408,6 +410,7 @@ export function ReviewClient() {
         setIgnored(new Set());
         setStatusAt(new Map());
         setCategory(new Map());
+        setCurrentId(null);
       } else {
         const cols = detectColumns(data);
 
@@ -445,11 +448,49 @@ export function ReviewClient() {
             `${carriedDone.size} already done and ${carriedIgnored.size} ignored were carried over from previous sheets.`,
           );
         }
+
+        // Auto-save the freshly uploaded sheet right away, so an upload is never
+        // lost even if the user forgets to hit Save. Built directly from the
+        // parsed data because the state setters above haven't applied yet.
+        try {
+          const numericColumns = new Set<string>();
+          const dataRows: DataRow[] = data.map((r, i) => ({
+            ...r,
+            __id: String(i),
+          }));
+          for (const c of cols)
+            if (isNumericColumn(dataRows, c)) numericColumns.add(c);
+
+          const savedRows: SavedRow[] = data.map((r, i) => {
+            const id = String(i);
+            return {
+              values: cols.map((c) => r[c] ?? null),
+              completed: carriedDone.has(id),
+              ignored: carriedIgnored.has(id),
+              statusAt: carriedAt.get(id),
+              category: carriedCat.get(id),
+            };
+          });
+          const newId = await saveDataset({
+            name: displayName,
+            fileName: file.name,
+            columns: cols,
+            numericColumns: [...numericColumns],
+            rows: savedRows,
+          });
+          setCurrentId(newId);
+          await refreshSaved();
+          toast.success("Sheet uploaded and auto-saved to this PC");
+        } catch {
+          // Auto-save failed (e.g. storage full) — the sheet is still usable and
+          // the user can save manually; don't block the upload on it.
+          setCurrentId(null);
+          toast.warning("Uploaded, but auto-save failed — save manually.");
+        }
       }
       setFileName(file.name);
-      setName(file.name.replace(/\.[^.]+$/, ""));
+      setName(displayName);
       setSelected(new Set());
-      setCurrentId(null); // a freshly uploaded sheet is unsaved
     } catch (e) {
       setError(
         e instanceof Error
@@ -459,7 +500,7 @@ export function ReviewClient() {
     } finally {
       setLoading(false);
     }
-  }, [linkHistory]);
+  }, [linkHistory, refreshSaved]);
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
