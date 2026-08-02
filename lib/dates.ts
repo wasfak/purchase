@@ -32,11 +32,13 @@ export function currentMonthStr(d: Date = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-/** A readable month label like "May 2026" for a "YYYY-MM" string. */
+/** A readable month label like "May 2026" for a "YYYY-MM" string. A fixed
+ *  locale keeps it deterministic across server and client (a locale-dependent
+ *  default would cause an SSR hydration mismatch on non-English browsers). */
 export function monthLabel(m: string): string {
   if (!/^\d{4}-\d{2}$/.test(m)) return m;
   const [y, mo] = m.split("-").map(Number);
-  return new Date(y, mo - 1, 1).toLocaleString(undefined, {
+  return new Date(y, mo - 1, 1).toLocaleString("en-US", {
     month: "long",
     year: "numeric",
   });

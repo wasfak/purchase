@@ -2,12 +2,15 @@
 
 import * as React from "react";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toDateStr, currentMonthStr, monthLabel } from "@/lib/dates";
+import { parseHtmlTable } from "@/lib/tasfya/parseTable";
+import { parseStock } from "@/lib/tasfya/stock";
+import { saveStock, loadStock, clearStock } from "@/lib/tasfya/stockCache";
 import {
   CompanyExpiryModal,
   DaysBadge,
@@ -438,6 +441,34 @@ export function OrdersBoard() {
   const [carrying, setCarrying] = React.useState(false);
   const [filing, setFiling] = React.useState(false);
 
+  // The store-wide stock file (رصيد المخزن), saved on THIS PC (IndexedDB), not
+  // the server. It holds every company's items; at settlement time it's sliced
+  // to the codes whose المورد matches the company. `null` = none saved yet.
+  const stockRef = React.useRef<HTMLInputElement>(null);
+  const [stockInfo, setStockInfo] = React.useState<{
+    fileName: string;
+    count: number;
+    savedAt: number;
+  } | null>(null);
+  const [stockBusy, setStockBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      const s = await loadStock();
+      if (active && s) {
+        setStockInfo({
+          fileName: s.fileName,
+          count: s.items.length,
+          savedAt: s.savedAt,
+        });
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   React.useEffect(() => {
     try {
       localStorage.setItem("orders:month", month);
@@ -818,6 +849,49 @@ export function OrdersBoard() {
     }
   }
 
+  // Upload + save the store-wide stock file to this PC (IndexedDB). Parsing
+  // happens client-side; only the parsed items are stored. Replaces any existing
+  // stock file.
+  async function onPickStock(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/\.html?$/i.test(file.name)) {
+      toast.error("Choose a .htm / .html stock file.");
+      return;
+    }
+    setStockBusy(true);
+    try {
+      const text = await file.text();
+      const items = parseStock(parseHtmlTable(text));
+      if (items.length === 0) {
+        toast.warning("No stock items found in that file.");
+      }
+      await saveStock(file.name, items);
+      setStockInfo({ fileName: file.name, count: items.length, savedAt: Date.now() });
+      toast.success(
+        `Saved stock on this PC: ${items.length.toLocaleString("en-US")} items`,
+      );
+    } catch {
+      toast.error("Couldn't read or save the stock file.");
+    } finally {
+      setStockBusy(false);
+    }
+  }
+
+  async function clearStockFile() {
+    setStockBusy(true);
+    try {
+      await clearStock();
+      setStockInfo(null);
+      toast.success("Stock removed from this PC.");
+    } catch {
+      toast.error("Couldn't remove the stock file.");
+    } finally {
+      setStockBusy(false);
+    }
+  }
+
   const toolbar = (
     <div className="flex flex-wrap items-center gap-2">
       <Button type="button" onClick={openAdd}>
@@ -839,6 +913,45 @@ export function OrdersBoard() {
         className="hidden"
         onChange={onPickFile}
       />
+
+      {/* Store-wide stock — saved on this PC, sliced per company at tasfya time. */}
+      <Button
+        type="button"
+        variant="outline"
+        disabled={stockBusy}
+        onClick={() => stockRef.current?.click()}
+        title="Upload one store-wide stock file (رصيد المخزن). Saved on this PC only."
+      >
+        {stockBusy ? <Loader2 className="animate-spin" /> : <PackageCheck />}
+        {stockInfo ? "Replace stock" : "Upload stock"}
+      </Button>
+      <input
+        ref={stockRef}
+        type="file"
+        accept=".htm,.html"
+        className="hidden"
+        onChange={onPickStock}
+      />
+      {stockInfo && (
+        <span className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground">
+          <span className="max-w-[11rem] truncate" title={stockInfo.fileName}>
+            {stockInfo.fileName}
+          </span>
+          <span className="tabular-nums">
+            · {stockInfo.count.toLocaleString("en-US")} items
+          </span>
+          <button
+            type="button"
+            onClick={clearStockFile}
+            disabled={stockBusy}
+            className="grid size-5 place-items-center rounded hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+            aria-label="Remove stock file"
+            title="Remove stock (this PC)"
+          >
+            <X className="size-3.5" />
+          </button>
+        </span>
+      )}
     </div>
   );
 
@@ -1107,6 +1220,9 @@ export function OrdersBoard() {
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
                     Display exp
                   </th>
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
+                    Auto Tasfya
+                  </th>
                   <th className="px-3 py-2.5" />
                 </tr>
               </thead>
@@ -1241,6 +1357,26 @@ export function OrdersBoard() {
                           today={today}
                           onOpen={() => setOpenExpiry(order.companyName)}
                         />
+                      </td>
+                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const c = (order.companyName ?? "").trim();
+                            if (!c) {
+                              toast.error("This order has no company name.");
+                              return;
+                            }
+                            const url = `/auto-tasfya/run?month=${encodeURIComponent(
+                              effectiveMonth(order),
+                            )}&company=${encodeURIComponent(c)}`;
+                            window.open(url, "_blank", "noopener");
+                          }}
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+                          title="Run Auto Tasfya for this company in a new tab"
+                        >
+                          <Calculator className="size-3.5" /> Tasfya
+                        </button>
                       </td>
                       <td className="px-3 py-2 align-top">
                         <div className="flex items-center gap-2">

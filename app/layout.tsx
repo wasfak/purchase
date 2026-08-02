@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { ThemeProvider } from "@/components/theme";
+import { THEME_INIT_SCRIPT } from "@/lib/theme-init";
 import { NotchNav } from "@/components/ui/notch-nav";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
@@ -14,7 +15,8 @@ type NavIcon =
   | "orders"
   | "review"
   | "contracts"
-  | "expiry";
+  | "expiry"
+  | "autotasfya";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
@@ -48,6 +50,12 @@ export default async function RootLayout({
         { value: "review", label: "Review", href: "/review", icon: "review" },
         { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
         { value: "expiry", label: "Expiry", href: "/expiry", icon: "expiry" },
+        {
+          value: "auto-tasfya",
+          label: "Auto Tasfya",
+          href: "/auto-tasfya",
+          icon: "autotasfya",
+        },
       ]
     : [{ value: "review", label: "Review", href: "/review", icon: "review" }];
 
@@ -61,6 +69,9 @@ export default async function RootLayout({
         suppressHydrationWarning
         className="min-h-full flex flex-col bg-background text-foreground"
       >
+        {/* No-flash theme: applied before paint. Server-rendered (not a client
+            component), so React 19 doesn't warn about the inline script. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <ClerkProvider>
           <ThemeProvider>
             <header className="sticky top-0 z-50 border-b border-border bg-card/90 backdrop-blur">

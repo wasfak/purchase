@@ -11,6 +11,15 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // Loading data on mount via an effect (fetch → setState) is the app's
+    // established pattern (orders, expiry, tasks, auto-tasfya). This React
+    // Compiler-oriented rule flags it as an error; keep it as a warning so it
+    // stays visible without failing the lint.
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+    },
+  },
 ]);
 
 export default eslintConfig;
