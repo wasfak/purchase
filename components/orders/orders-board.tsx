@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -48,6 +48,98 @@ function ExpiryCell({
           · <DaysBadge days={soonest} />
         </span>
       )}
+    </button>
+  );
+}
+
+// How many days after the send date before we nudge you to review the order
+// ("tasfya" / settlement) — i.e. check whether it actually arrived.
+const REVIEW_AFTER_DAYS = 5;
+
+// Whether the user has manually marked this order as reviewed ("tasfya" done).
+function isReviewed(order: Order): boolean {
+  return (order.reviewed ?? "").trim() === "yes";
+}
+
+// The review reminder state for one order, derived from its send date:
+//  - "none":     no send date yet, nothing to review.
+//  - "reviewed": the user manually ticked it off — settled (green).
+//  - "done":     the order is finished, so it's already settled.
+//  - "due":      REVIEW_AFTER_DAYS+ days have passed since sending — remind now.
+//  - "waiting":  sent, but the review day hasn't arrived yet (still counting).
+// `days` is how many days remain until review (waiting) or have passed (due).
+function reviewStatus(order: Order): {
+  state: "none" | "reviewed" | "done" | "due" | "waiting";
+  days: number;
+} {
+  const send = (order.sendDate ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(send)) return { state: "none", days: 0 };
+  if (isReviewed(order)) return { state: "reviewed", days: 0 };
+  if ((order.finished ?? "").trim()) return { state: "done", days: 0 };
+
+  const sent = new Date(`${send}T00:00:00`);
+  const due = new Date(sent);
+  due.setDate(due.getDate() + REVIEW_AFTER_DAYS);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((now.getTime() - due.getTime()) / 86_400_000);
+  if (diffDays >= 0) return { state: "due", days: diffDays };
+  return { state: "waiting", days: -diffDays };
+}
+
+// The "Review tasfya" cell: reminds you to check an order once REVIEW_AFTER_DAYS
+// have passed since its send date. Click it to tick it off as reviewed (green);
+// click again to clear. The reviewed flag is saved on the order.
+function ReviewCell({
+  order,
+  onToggle,
+  busy,
+}: {
+  order: Order;
+  onToggle: () => void;
+  busy: boolean;
+}) {
+  const { state, days } = reviewStatus(order);
+  // No send date yet — nothing to review, and nothing to toggle.
+  if (state === "none") return <span className="text-muted-foreground">—</span>;
+  // Finished by its own date, not a manual review — leave as a settled marker.
+  if (state === "done")
+    return (
+      <span className="inline-flex rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+        Settled
+      </span>
+    );
+
+  const label =
+    state === "reviewed" ? (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+        <Check className="size-3" />
+        Reviewed
+      </span>
+    ) : state === "due" ? (
+      <span className="inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive">
+        <AlarmClock className="size-3" />
+        Review tasfya
+      </span>
+    ) : (
+      <span className="whitespace-nowrap text-xs text-muted-foreground">
+        in {days} day{days === 1 ? "" : "s"}
+      </span>
+    );
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={busy}
+      className="-mx-1 rounded px-1 py-0.5 transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
+      title={
+        state === "reviewed"
+          ? "Reviewed — click to clear"
+          : "Click to mark as reviewed"
+      }
+    >
+      {label}
     </button>
   );
 }
@@ -235,7 +327,14 @@ type OrderFilter =
   | "sent"
   | "noNeed"
   | "important"
-  | "dueSoon";
+  | "dueSoon"
+  | "reviewDue";
+
+// An order needs a "review tasfya" nudge when REVIEW_AFTER_DAYS have passed
+// since it was sent and it isn't finished yet.
+function isReviewDue(order: Order): boolean {
+  return reviewStatus(order).state === "due";
+}
 
 // The read-only display node for a cell, with a dash fallback when empty.
 function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
@@ -377,6 +476,7 @@ export function OrdersBoard() {
     else if (filter === "noNeed") rows = rows.filter(isNoNeed);
     else if (filter === "important") rows = rows.filter(isImportant);
     else if (filter === "dueSoon") rows = rows.filter(isDueSoon);
+    else if (filter === "reviewDue") rows = rows.filter(isReviewDue);
     const q = search.trim().toLowerCase();
     if (q) {
       rows = rows.filter((o) =>
@@ -642,6 +742,11 @@ export function OrdersBoard() {
     commitCell(order._id, "noNeed", isNoNeed(order) ? "" : "yes");
   }
 
+  // Flip the "reviewed" (tasfya done) flag on an order and persist it.
+  function toggleReviewed(order: Order) {
+    commitCell(order._id, "reviewed", isReviewed(order) ? "" : "yes");
+  }
+
   async function deleteOrder(id: string) {
     setBusy(id, true);
     try {
@@ -761,7 +866,9 @@ export function OrdersBoard() {
                 ? " important"
                 : filter === "dueSoon"
                   ? " due soon"
-                  : ""}{" "}
+                  : filter === "reviewDue"
+                    ? " to review"
+                    : ""}{" "}
         in {monthLabel(month)}
       </span>
       <label className="relative flex items-center">
@@ -787,6 +894,7 @@ export function OrdersBoard() {
           <option value="noNeed">No need</option>
           <option value="important">Important</option>
           <option value="dueSoon">Due soon</option>
+          <option value="reviewDue">Review tasfya</option>
         </select>
       </label>
       {unassignedOrders.length > 0 && (
@@ -973,6 +1081,8 @@ export function OrdersBoard() {
                       ? `No important orders in ${monthLabel(month)}.`
                       : filter === "dueSoon"
                       ? `No orders due soon in ${monthLabel(month)}.`
+                      : filter === "reviewDue"
+                      ? `No orders to review in ${monthLabel(month)}.`
                       : filter === "notStarted"
                         ? `No not-started orders in ${monthLabel(month)} — all done.`
                         : `No orders to show in ${monthLabel(month)}.`}
@@ -991,6 +1101,9 @@ export function OrdersBoard() {
                       {col.label}
                     </th>
                   ))}
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
+                    Review
+                  </th>
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
                     Display exp
                   </th>
@@ -1113,6 +1226,13 @@ export function OrdersBoard() {
                           </td>
                         );
                       })}
+                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                        <ReviewCell
+                          order={order}
+                          onToggle={() => toggleReviewed(order)}
+                          busy={busy}
+                        />
+                      </td>
                       <td className="px-3 py-2 align-top whitespace-nowrap">
                         <ExpiryCell
                           rows={expiryByCompany.get(

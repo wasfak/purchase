@@ -35,6 +35,9 @@ const OrderSchema = new Schema(
     // "yes" when this company doesn't need an order this month; "" otherwise.
     noNeed: { type: String, default: "" },
 
+    // "yes" once the user has reviewed ("tasfya") the order after sending it.
+    reviewed: { type: String, default: "" },
+
     // "yes" / "no" — flags an order as important for the month.
     important: { type: String, default: "" },
 
@@ -70,6 +73,7 @@ export const ORDER_TEXT_FIELDS = [
   "notes",
   "noNeed",
   "important",
+  "reviewed",
 ] as const;
 
 export type OrderTextField = (typeof ORDER_TEXT_FIELDS)[number];
