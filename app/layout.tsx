@@ -29,8 +29,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Users without full access only ever see the Review tab; among full-access
-  // users, the Dashboard link additionally requires the dashboard allow-list.
+  // Users without full access only ever see the Contracts tab; among
+  // full-access users, the Dashboard link additionally requires the dashboard
+  // allow-list.
   const fullAccess = await hasFullAccess();
   const showDashboard = fullAccess && (await canViewDashboard());
   const navItems: NavItem[] = fullAccess
@@ -57,7 +58,14 @@ export default async function RootLayout({
           icon: "autotasfya",
         },
       ]
-    : [{ value: "review", label: "Review", href: "/review", icon: "review" }];
+    : [
+        {
+          value: "contracts",
+          label: "Contracts",
+          href: "/contracts",
+          icon: "contracts",
+        },
+      ];
 
   return (
     <html
@@ -78,7 +86,7 @@ export default async function RootLayout({
               <div className="mx-auto w-full max-w-7xl">
                 <NotchNav
                   items={navItems}
-                  defaultValue={fullAccess ? "home" : "review"}
+                  defaultValue={fullAccess ? "home" : "contracts"}
                   ariaLabel="Primary navigation"
                 />
               </div>

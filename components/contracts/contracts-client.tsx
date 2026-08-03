@@ -439,6 +439,12 @@ export function ContractsClient() {
   );
   // Quarters stay hidden until the user has reviewed suppliers and clicks Show.
   const [showQuarters, setShowQuarters] = React.useState(false);
+  // Item codes the user has removed from the Total buy (via the quarterly
+  // table's Ignore toggle). Excluded codes still show in the table (struck
+  // through) but drop out of the totals, target readout and insight charts.
+  const [excludedCodes, setExcludedCodes] = React.useState<Set<string>>(
+    new Set(),
+  );
   // Yearly buy target (as typed); drives the achieved/remaining readout.
   const [target, setTarget] = React.useState("");
 
@@ -476,13 +482,16 @@ export function ContractsClient() {
     [supplierFilteredRows],
   );
 
-  // Grand total per quarter (sum across all codes), for the bar chart.
+  // Grand total per quarter (sum across all codes the user kept), for the bar
+  // chart. Codes removed from the Total buy are skipped.
   const quarterTotals = React.useMemo(() => {
     const t = [0, 0, 0, 0];
-    for (const row of quarterly.totals)
+    for (const row of quarterly.totals) {
+      if (excludedCodes.has(row.code)) continue;
       for (let i = 0; i < 4; i++) t[i] += row.quarters[i];
+    }
     return t.map((v) => Math.round(v * 100) / 100);
-  }, [quarterly]);
+  }, [quarterly, excludedCodes]);
 
   // Total achieved so far = all four quarters combined.
   const achieved = React.useMemo(
@@ -491,16 +500,25 @@ export function ContractsClient() {
   );
 
   // Spend by supplier / top items / monthly trend / bonus, from the same
-  // supplier-filtered lines.
+  // supplier-filtered lines with any codes removed from the Total buy dropped.
+  const activeRows = React.useMemo(
+    () =>
+      excludedCodes.size === 0
+        ? supplierFilteredRows
+        : supplierFilteredRows.filter(
+            (r) => !excludedCodes.has(r[CONTRACT_COLUMNS.code]),
+          ),
+    [supplierFilteredRows, excludedCodes],
+  );
   const insights = React.useMemo(
-    () => computeInsights(supplierFilteredRows),
-    [supplierFilteredRows],
+    () => computeInsights(activeRows),
+    [activeRows],
   );
 
   const quarterlyRows = React.useMemo<DataRow[]>(
     () =>
-      quarterly.totals.map((t, i) => ({
-        __id: String(i),
+      quarterly.totals.map((t) => ({
+        __id: t.code,
         [CONTRACT_COLUMNS.code]: t.code,
         [CONTRACT_COLUMNS.product]: t.product,
         [Q_TABLE_LABELS[0]]: t.quarters[0],
@@ -537,6 +555,7 @@ export function ContractsClient() {
       setCurrentId(null);
       setSavedInfo(null);
       setExcludedSuppliers(new Set());
+      setExcludedCodes(new Set());
       setShowQuarters(false);
       toast.success(
         `Loaded ${parsed.length} purchase line${parsed.length === 1 ? "" : "s"} from ${htmls.length} file${htmls.length === 1 ? "" : "s"}`,
@@ -562,6 +581,7 @@ export function ContractsClient() {
       setCurrentId(null);
       setSavedInfo(null);
       setExcludedSuppliers(new Set());
+      setExcludedCodes(new Set());
       setShowQuarters(false);
       if (codes.length === 0) {
         toast.warning("No item codes were detected in the stock file.");
@@ -629,6 +649,7 @@ export function ContractsClient() {
       setName(c.name);
       setCurrentId(c.id);
       setExcludedSuppliers(new Set());
+      setExcludedCodes(new Set());
       setShowQuarters(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that contract");
@@ -952,12 +973,26 @@ export function ContractsClient() {
               {showQuarters && (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    Buy value = كمية الوارد × إجمالي تكلفة الوحدة, per calendar
-                    quarter.{" "}
+                    Buy value = كمية الوارد × سعر الوحدة شامل الضريبة, per
+                    calendar quarter.{" "}
                     {quarterly.totals.length.toLocaleString()} items ·{" "}
                     {quarterly.bonusExcluded.toLocaleString()} bonus line
                     {quarterly.bonusExcluded === 1 ? "" : "s"} (أساسي = 100%)
                     excluded.
+                    {excludedCodes.size > 0 && (
+                      <>
+                        {" "}
+                        <button
+                          type="button"
+                          onClick={() => setExcludedCodes(new Set())}
+                          className="font-medium text-primary underline-offset-2 hover:underline"
+                        >
+                          {excludedCodes.size.toLocaleString()} item
+                          {excludedCodes.size === 1 ? "" : "s"} removed from Total
+                          buy — undo
+                        </button>
+                      </>
+                    )}
                   </p>
 
                   {/* Yearly target vs. what's achieved so far. */}
@@ -1099,6 +1134,16 @@ export function ContractsClient() {
                     columns={QUARTERLY_TABLE_COLUMNS}
                     rows={quarterlyRows}
                     numericColumns={QUARTERLY_NUMERIC}
+                    ignorable={{
+                      isIgnored: (id) => excludedCodes.has(id),
+                      onToggle: (id) =>
+                        setExcludedCodes((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(id)) next.delete(id);
+                          else next.add(id);
+                          return next;
+                        }),
+                    }}
                     rightToolbar={
                       <Button variant="outline" size="sm" onClick={clearAll}>
                         <X /> Clear

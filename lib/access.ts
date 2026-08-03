@@ -40,23 +40,31 @@ export async function canViewDashboard(): Promise<boolean> {
 }
 
 // Emails allowed to use the whole site. Everyone else is limited to the
-// Review page. Configure as a comma-separated list in FULL_ACCESS_EMAILS.
+// Contracts page. Configure as a comma-separated list in FULL_ACCESS_EMAILS.
 const FULL_ACCESS_EMAILS = (process.env.FULL_ACCESS_EMAILS ?? "")
   .split(",")
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
 
-/** Whether the signed-in user may access every tab (not just Review). */
+/**
+ * Whether the signed-in user may access every tab (not just Contracts). The
+ * privileged group is the union of FULL_ACCESS_EMAILS and the dashboard
+ * allow-list — anyone in either list sees the full site.
+ */
 export async function hasFullAccess(): Promise<boolean> {
   const email = await currentUserEmail();
   if (!email) return false;
-  return FULL_ACCESS_EMAILS.includes(email.toLowerCase());
+  const normalized = email.toLowerCase();
+  return (
+    FULL_ACCESS_EMAILS.includes(normalized) ||
+    ALLOWED_EMAILS.includes(normalized)
+  );
 }
 
 /**
  * Server-component guard for restricted pages: users without full access are
- * sent to the Review page, the only one they're allowed to use.
+ * sent to the Contracts page, the only one they're allowed to use.
  */
 export async function requireFullAccess(): Promise<void> {
-  if (!(await hasFullAccess())) redirect("/review");
+  if (!(await hasFullAccess())) redirect("/contracts");
 }

@@ -166,8 +166,9 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
  * Aggregate purchase lines into per-code buy totals split by calendar quarter
  * (from the month of تاريخ الحركة, year ignored).
  *
- * Buy value of a line = كمية الوارد × إجمالي تكلفة الوحدة. Bonus lines — where
- * أساسي (basic discount) is 100%, i.e. the item was free (بونص) — are excluded.
+ * Buy value of a line = كمية الوارد × سعر الوحدة شامل الضريبة. Bonus lines —
+ * where أساسي (basic discount) is 100%, i.e. the item was free (بونص) — are
+ * excluded.
  */
 export function computeQuarterlyTotals(rows: PurchaseRow[]): {
   totals: QuarterlyTotal[];
@@ -188,7 +189,7 @@ export function computeQuarterlyTotals(rows: PurchaseRow[]): {
 
     const value =
       (Number(r[CONTRACT_COLUMNS.qty]) || 0) *
-      (Number(r[CONTRACT_COLUMNS.totalCost]) || 0);
+      (Number(r[CONTRACT_COLUMNS.priceIncTax]) || 0);
 
     const code = r[CONTRACT_COLUMNS.code];
     let entry = map.get(code);
@@ -307,7 +308,7 @@ export type Insights = {
 
 /**
  * One-pass roll-up of the matched purchase lines into the insight metrics.
- * Buy value of a paid line = كمية الوارد × إجمالي تكلفة الوحدة; bonus lines
+ * Buy value of a paid line = كمية الوارد × سعر الوحدة شامل الضريبة; bonus lines
  * (أساسي = 100%) are tracked separately as free-goods value.
  */
 export function computeInsights(rows: PurchaseRow[]): Insights {
@@ -321,7 +322,7 @@ export function computeInsights(rows: PurchaseRow[]): Insights {
 
   for (const r of rows) {
     const qty = Number(r[CONTRACT_COLUMNS.qty]) || 0;
-    const value = qty * (Number(r[CONTRACT_COLUMNS.totalCost]) || 0);
+    const value = qty * (Number(r[CONTRACT_COLUMNS.priceIncTax]) || 0);
     const isBonus = Number(r[CONTRACT_COLUMNS.basic]) === 100;
 
     if (isBonus) {
