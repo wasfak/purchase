@@ -4,7 +4,7 @@ import { ContractsClient } from "@/components/contracts/contracts-client";
 // full-access guard. Restricted users are redirected here from other pages.
 export default function Page() {
   return (
-    <main className="mx-auto w-full max-w-7xl space-y-5 p-6">
+    <main className="mx-auto w-full max-w-[120rem] space-y-5 p-6">
       <div className="border-b pb-3">
         <h1 className="text-2xl font-bold tracking-tight">Contracts</h1>
         <p className="text-sm text-muted-foreground">

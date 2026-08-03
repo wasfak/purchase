@@ -43,6 +43,7 @@ import {
   saveContract,
   type ContractMeta,
 } from "@/lib/contracts-store";
+import { YasmenView } from "@/components/contracts/yasmen-view";
 
 const HTML_ACCEPT = ".htm,.html";
 const isHtml = (f: File) => /\.html?$/i.test(f.name);
@@ -64,7 +65,7 @@ const QUARTERLY_TABLE_COLUMNS = [
 ];
 const QUARTERLY_NUMERIC = new Set<string>([...Q_TABLE_LABELS, TOTAL_TABLE_LABEL]);
 
-type View = "lines" | "quarters";
+type View = "lines" | "quarters" | "yasmen";
 
 // Horizontal bar list used for "spend by supplier" and "top items by spend".
 function HBars({
@@ -885,6 +886,7 @@ export function ContractsClient() {
               [
                 ["quarters", "Quarterly totals"],
                 ["lines", "Purchase lines"],
+                ["yasmen", "Yasmen mode"],
               ] as [View, string][]
             ).map(([v, label]) => (
               <button
@@ -1239,7 +1241,7 @@ export function ContractsClient() {
                 </>
               )}
             </>
-          ) : (
+          ) : view === "lines" ? (
             <LinesView
               rows={supplierFilteredRows}
               onClear={clearAll}
@@ -1253,6 +1255,8 @@ export function ContractsClient() {
                 />
               }
             />
+          ) : (
+            <YasmenView rows={matchedRows} />
           )}
         </>
       )}
