@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -402,6 +403,11 @@ export function OrdersBoard() {
   const [loading, setLoading] = React.useState(true);
   // Saved expiry snapshot, for the per-company popup.
   const [expiryItems, setExpiryItems] = React.useState<ExpiryRow[]>([]);
+  // Normalized keys of companies that have at least one saved note, so the
+  // board can show a note indicator next to their name.
+  const [companiesWithNotes, setCompaniesWithNotes] = React.useState<
+    Set<string>
+  >(new Set());
   const [openExpiry, setOpenExpiry] = React.useState<string | null>(null);
   const today = React.useMemo(() => new Date(), []);
   const [showForm, setShowForm] = React.useState(false);
@@ -600,6 +606,33 @@ export function OrdersBoard() {
         if (active) setExpiryItems(items);
       } catch {
         // No snapshot — companies just won't show an expiry pill.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Load which companies have saved notes, to flag them on the board.
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/company-notes");
+        if (!res.ok) return;
+        const data = await res.json();
+        const keys = new Set<string>();
+        for (const n of (data.notes ?? []) as {
+          key?: string;
+          entries?: unknown[];
+        }[]) {
+          if (n.key && Array.isArray(n.entries) && n.entries.length > 0) {
+            keys.add(n.key);
+          }
+        }
+        if (active) setCompaniesWithNotes(keys);
+      } catch {
+        // No notes endpoint — just don't show indicators.
       }
     })();
     return () => {
@@ -1223,6 +1256,9 @@ export function OrdersBoard() {
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
                     Auto Tasfya
                   </th>
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
+                    Flying
+                  </th>
                   <th className="px-3 py-2.5" />
                 </tr>
               </thead>
@@ -1326,9 +1362,22 @@ export function OrdersBoard() {
                               </button>
                             ) : col.key === "companyName" ? (
                               <span className="flex items-center gap-2">
-                                <span dir="auto" className="whitespace-nowrap">
+                                <Link
+                                  href={`/company/${encodeURIComponent(raw)}`}
+                                  dir="auto"
+                                  className="whitespace-nowrap font-medium text-primary underline-offset-2 hover:underline"
+                                  title="Open this company's page (all data + notes)"
+                                >
                                   {raw}
-                                </span>
+                                </Link>
+                                {companiesWithNotes.has(
+                                  normalizeCompany(raw),
+                                ) && (
+                                  <StickyNote
+                                    className="size-3.5 shrink-0 text-amber-500"
+                                    aria-label="Has notes"
+                                  />
+                                )}
                                 {noNeed && (
                                   <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
                                     <Ban className="size-3" />
@@ -1376,6 +1425,26 @@ export function OrdersBoard() {
                           title="Run Auto Tasfya for this company in a new tab"
                         >
                           <Calculator className="size-3.5" /> Tasfya
+                        </button>
+                      </td>
+                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const c = (order.companyName ?? "").trim();
+                            if (!c) {
+                              toast.error("This order has no company name.");
+                              return;
+                            }
+                            const url = `/flying/run?month=${encodeURIComponent(
+                              effectiveMonth(order),
+                            )}&company=${encodeURIComponent(c)}`;
+                            window.open(url, "_blank", "noopener");
+                          }}
+                          className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-700 transition-colors hover:bg-sky-500/20 dark:text-sky-400"
+                          title="Open the Flying tasfya worksheet for this company in a new tab"
+                        >
+                          <Plane className="size-3.5" /> Flying
                         </button>
                       </td>
                       <td className="px-3 py-2 align-top">
