@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Save, Search, Trash2 } from "lucide-react";
+import { RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,11 @@ const num = (s: string | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// Reverse a percent discount already baked into a value (e.g. peel back the
+// إضافي/خاص discounts to recover سعر الصيدلي). No-op for 0 / out-of-range pct.
+const undiscount = (v: number, pct: number) =>
+  pct > 0 && pct < 100 ? v / (1 - pct / 100) : v;
+
 const money = (v: number) =>
   v.toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -33,16 +38,28 @@ const qtyFmt = (v: number) =>
 // quantity, multiplies by سعر الصيدلي, and grand-totals the value.
 export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
   // One catalog entry per code, with a representative سعر الصيدلي taken from the
-  // item's سعر الوحدة شامل الضريبة (last line seen wins).
+  // item's سعر الوحدة شامل الضريبة (last priced line seen wins). The report's
+  // price already has the إضافي (extra) and خاص (special) discounts deducted,
+  // but سعر الصيدلي must ignore both — only the أساسي discount should affect it.
+  // So we un-apply them: price ÷ (1 − إضافي%) ÷ (1 − خاص%).
   const catalog = React.useMemo<CodeInfo[]>(() => {
     const map = new Map<string, CodeInfo>();
     for (const r of rows) {
       const code = r[CONTRACT_COLUMNS.code];
       if (!code) continue;
+      const incTax = num(r[CONTRACT_COLUMNS.priceIncTax]);
+      // Skip bonus/zero-price lines so they don't clobber the real price.
+      if (incTax <= 0) continue;
+      // إضافي and خاص are percent discounts already baked into incTax; peel them
+      // back off so only أساسي remains in سعر الصيدلي.
+      const price = undiscount(
+        undiscount(incTax, num(r[CONTRACT_COLUMNS.extra])),
+        num(r[CONTRACT_COLUMNS.special]),
+      );
       map.set(code, {
         code,
         product: r[CONTRACT_COLUMNS.product] || "",
-        price: num(r[CONTRACT_COLUMNS.priceIncTax]),
+        price,
       });
     }
     return [...map.values()].sort((a, b) =>
@@ -119,8 +136,10 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
       return next;
     });
 
-  const [selected, setSelected] = React.useState<string[]>([]); // ordered codes
-  // The saved code preset (loaded once); auto-applied to whatever data loads.
+  // The persistent master set of chosen codes (ordered) — the single source of
+  // truth. Every pick is saved immediately (see updateSaved) and re-applied to
+  // any new upload, so the sheet auto-builds for these codes with no manual
+  // "save" step.
   const [savedCodes, setSavedCodes] = React.useState<string[]>([]);
   // code -> colId -> raw quantity string
   const [cells, setCells] = React.useState<Record<string, Record<string, string>>>(
@@ -142,29 +161,34 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
     }
   }, []);
 
-  // Whenever the loaded data (or the preset) changes, auto-select the saved
-  // codes that exist in the new files. Manual toggles afterwards stick until
-  // the next upload.
   const catalogCodes = React.useMemo(
     () => new Set(catalog.map((c) => c.code)),
     [catalog],
   );
-  React.useEffect(() => {
-    if (savedCodes.length === 0) return;
-    setSelected(savedCodes.filter((c) => catalogCodes.has(c)));
-  }, [catalogCodes, savedCodes]);
 
-  const savePreset = () => {
-    try {
-      localStorage.setItem(PRESET_KEY, JSON.stringify(selected));
-      setSavedCodes(selected);
-      toast.success(
-        `تم حفظ ${selected.length} صنف — سيُطبَّق تلقائياً على أي ملف جديد`,
-      );
-    } catch {
-      toast.error("تعذّر حفظ الاختيار على هذا الجهاز");
-    }
-  };
+  // Rows to show = saved codes that exist in the current upload, in saved
+  // order. Uploading new buy/stock files re-derives this automatically, so the
+  // report regenerates for whichever saved codes the new files contain.
+  const selected = React.useMemo(
+    () => savedCodes.filter((c) => catalogCodes.has(c)),
+    [savedCodes, catalogCodes],
+  );
+
+  // Mirror the master set to localStorage on every change — this is the "smart
+  // save": picks persist instantly and survive uploads/reloads.
+  const updateSaved = React.useCallback(
+    (updater: (prev: string[]) => string[]) =>
+      setSavedCodes((prev) => {
+        const next = updater(prev);
+        try {
+          localStorage.setItem(PRESET_KEY, JSON.stringify(next));
+        } catch {
+          // localStorage unavailable — selection just won't persist.
+        }
+        return next;
+      }),
+    [],
+  );
 
   const clearPreset = () => {
     try {
@@ -173,13 +197,44 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
       // ignore
     }
     setSavedCodes([]);
-    toast.success("تم حذف الأصناف المحفوظة");
+    toast.success("تم حذف كل الأصناف المحفوظة");
   };
 
   const toggleCode = (code: string) =>
-    setSelected((prev) =>
+    updateSaved((prev) =>
       prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code],
     );
+
+  // Add every code in the current upload to the saved set (keeps already-saved
+  // codes from other files).
+  const selectAllShown = () =>
+    updateSaved((prev) => [
+      ...prev,
+      ...catalog.map((c) => c.code).filter((c) => !prev.includes(c)),
+    ]);
+
+  // Deselect just the codes visible in this upload; saved codes from other
+  // files stay put. Use "حذف المحفوظ" to wipe everything.
+  const clearShown = () =>
+    updateSaved((prev) => prev.filter((c) => !catalogCodes.has(c)));
+
+  // One-tap "generate from new upload": the saved codes are already applied
+  // (selected is derived), so this drops any leftover manual quantity/price
+  // edits from the previous data set — the sheet then shows each saved code's
+  // quantities and سعر الصيدلي straight from the file just uploaded.
+  const loadFromUpload = () => {
+    setCells({});
+    setPriceOverride({});
+    if (savedCodes.length === 0) {
+      toast("لا توجد أصناف محفوظة بعد — اختر أصنافاً من القائمة أولاً");
+      return;
+    }
+    const missing = savedCodes.length - selected.length;
+    toast.success(
+      `تم عرض ${selected.length} صنف ببيانات الملف الحالي` +
+        (missing > 0 ? ` (${missing} صنف محفوظ غير موجود في هذا الملف)` : ""),
+    );
+  };
 
   const setCell = (code: string, colId: string, value: string) =>
     setCells((prev) => ({
@@ -305,6 +360,19 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
         </div>
       </div>
 
+      {/* One-tap regenerate: after uploading new buy/stock files, pull the
+          saved codes and fill their data from the new upload. */}
+      {savedCodes.length > 0 && catalog.length > 0 && (
+        <Button
+          onClick={loadFromUpload}
+          className="w-full gap-2 sm:w-auto"
+          title="جلب الأصناف المحفوظة وعرض كمياتها وأسعارها من الملف المرفوع حديثاً"
+        >
+          <RefreshCw className="size-4" />
+          جلب الأصناف المحفوظة وعرض بياناتها من الملف الجديد
+        </Button>
+      )}
+
       {/* Code picker: multi-click the items to include in the sheet. */}
       <div className="rounded-xl border border-border bg-card p-3">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -315,27 +383,18 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => setSelected(catalog.map((c) => c.code))}
-              disabled={selected.length === catalog.length}
+              onClick={selectAllShown}
+              disabled={catalog.length > 0 && selected.length === catalog.length}
             >
               تحديد الكل
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => setSelected([])}
+              onClick={clearShown}
               disabled={selected.length === 0}
             >
               مسح
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={savePreset}
-              disabled={selected.length === 0}
-              title="حفظ الأصناف المختارة ليُعاد اختيارها تلقائياً مع أي ملف جديد"
-            >
-              <Save className="size-4" /> حفظ الاختيار
             </Button>
           </div>
         </div>
@@ -343,7 +402,8 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
         {savedCodes.length > 0 && (
           <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
             <span>
-              {savedCodes.length} صنف محفوظ — يُطبَّق تلقائياً على أي ملف جديد
+              {savedCodes.length} صنف محفوظ تلقائياً — يظهر منها {selected.length}{" "}
+              في الملف الحالي، والباقي يظهر عند رفع ملفاته
             </span>
             <button
               type="button"
