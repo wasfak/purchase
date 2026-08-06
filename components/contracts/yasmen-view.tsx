@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { RefreshCw, Search, Trash2 } from "lucide-react";
+import { Download, RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -142,9 +142,9 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
   // "save" step.
   const [savedCodes, setSavedCodes] = React.useState<string[]>([]);
   // code -> colId -> raw quantity string
-  const [cells, setCells] = React.useState<Record<string, Record<string, string>>>(
-    {},
-  );
+  const [cells, setCells] = React.useState<
+    Record<string, Record<string, string>>
+  >({});
   // code -> سعر الصيدلي override (empty = use the catalog price)
   const [priceOverride, setPriceOverride] = React.useState<
     Record<string, string>
@@ -266,6 +266,56 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
     [selected, columns, cells, priceOverride, infoByCode, receiptsByCode],
   );
 
+  // Export the value sheet exactly as shown: code, product, one column per
+  // distributor, total quantity, سعر الصيدلي, total value, plus a grand-total
+  // row at the bottom.
+  const exportExcel = async () => {
+    if (selected.length === 0) {
+      toast.error("اختر صنفاً واحداً على الأقل قبل التصدير");
+      return;
+    }
+    try {
+      const XLSX = await import("xlsx");
+      const data = selected.map((code) => {
+        const info = infoByCode.get(code);
+        const row: Record<string, string | number> = {
+          الكود: code,
+          الصنف: info?.product || "",
+        };
+        for (const col of columns) row[col.name] = num(cellValue(code, col.id));
+        row["اجمالي الكمية"] = qtyOf(code);
+        row["سعر الصيدلي"] = priceOf(code);
+        row["اجمالي القيمة"] = valueOf(code);
+        return row;
+      });
+      // Grand-total row.
+      const totalRow: Record<string, string | number> = {
+        الكود: "",
+        الصنف: "اجمالي قيمة المسحوبات من الاصناف",
+      };
+      for (const col of columns) totalRow[col.name] = "";
+      totalRow["اجمالي الكمية"] = "";
+      totalRow["سعر الصيدلي"] = "";
+      totalRow["اجمالي القيمة"] = grandTotal;
+      data.push(totalRow);
+
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws["!cols"] = Object.keys(data[0]).map((key) => {
+        const width = data.reduce(
+          (m, r) => Math.max(m, String(r[key] ?? "").length),
+          key.length,
+        );
+        return { wch: Math.min(Math.max(width + 2, 8), 48) };
+      });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "المسحوبات");
+      const q = quarter === "all" ? "all" : `Q${quarter + 1}`;
+      XLSX.writeFile(wb, `yasmen-${q}.xlsx`);
+    } catch {
+      toast.error("تعذّر تصدير الملف");
+    }
+  };
+
   const needle = query.trim().toLowerCase();
   const shown = needle
     ? catalog.filter(
@@ -384,7 +434,9 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
               size="sm"
               variant="ghost"
               onClick={selectAllShown}
-              disabled={catalog.length > 0 && selected.length === catalog.length}
+              disabled={
+                catalog.length > 0 && selected.length === catalog.length
+              }
             >
               تحديد الكل
             </Button>
@@ -402,8 +454,8 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
         {savedCodes.length > 0 && (
           <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
             <span>
-              {savedCodes.length} صنف محفوظ تلقائياً — يظهر منها {selected.length}{" "}
-              في الملف الحالي، والباقي يظهر عند رفع ملفاته
+              {savedCodes.length} صنف محفوظ تلقائياً — يظهر منها{" "}
+              {selected.length} في الملف الحالي، والباقي يظهر عند رفع ملفاته
             </span>
             <button
               type="button"
@@ -471,6 +523,13 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
         </div>
       ) : (
         <>
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" onClick={exportExcel}>
+              <Download />
+              انقر لتصدير الاكسيل
+            </Button>
+          </div>
+
           <div className="overflow-auto rounded-md border border-border shadow-sm">
             <table
               dir="ltr"

@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Download,
   FileText,
   Gift,
   Loader2,
@@ -47,6 +48,38 @@ import { YasmenView } from "@/components/contracts/yasmen-view";
 
 const HTML_ACCEPT = ".htm,.html";
 const isHtml = (f: File) => /\.html?$/i.test(f.name);
+
+// Sanitize a contract name into a safe .xlsx filename stem.
+const safeFileStem = (s: string) =>
+  (s.trim().replace(/[^\w؀-ۿ.-]+/g, "_") || "contracts").slice(0, 60);
+
+// Write an array of records to an .xlsx download. Column widths are derived
+// from the header/value lengths so Arabic labels aren't clipped.
+async function downloadSheet(
+  rows: Record<string, string | number>[],
+  sheetName: string,
+  fileName: string,
+) {
+  const XLSX = await import("xlsx");
+  const ws = XLSX.utils.json_to_sheet(rows);
+  if (rows.length > 0) {
+    ws["!cols"] = Object.keys(rows[0]).map((key) => {
+      const width = rows.reduce(
+        (m, r) => Math.max(m, String(r[key] ?? "").length),
+        key.length,
+      );
+      return { wch: Math.min(Math.max(width + 2, 8), 48) };
+    });
+  }
+  const wb = XLSX.utils.book_new();
+  // Sheet names can't exceed 31 chars or contain []:*?/\\.
+  XLSX.utils.book_append_sheet(
+    wb,
+    ws,
+    sheetName.replace(/[[\]:*?/\\]/g, " ").slice(0, 31) || "Sheet1",
+  );
+  XLSX.writeFile(wb, fileName);
+}
 
 // The line table shows values exactly as parsed (no numeric rounding), so we
 // pass an empty numeric-column set to DataTable.
@@ -226,6 +259,29 @@ function LinesView({
   const num = (v: number) =>
     v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
+  const exportExcel = async () => {
+    if (aggregates.length === 0) {
+      toast.error("لا توجد بيانات للتصدير");
+      return;
+    }
+    try {
+      const data = aggregates.map((a) => ({
+        "كود الصنف": a.code,
+        "اسم الصنف": a.product || "",
+        المورد: a.suppliers.join("، "),
+        [qtyLabel]: a.qty,
+        Lines: a.lines,
+      }));
+      await downloadSheet(
+        data,
+        tab === "received" ? "الوارد" : "بونص",
+        `contracts-lines-${tab}.xlsx`,
+      );
+    } catch {
+      toast.error("تعذّر تصدير الملف");
+    }
+  };
+
   return (
     <div className="space-y-4">
       {supplierFilter}
@@ -261,9 +317,14 @@ function LinesView({
           {aggregates.length === 1 ? "" : "s"} · total {qtyLabel}:{" "}
           <b className="tabular-nums text-foreground">{num(totalQty)}</b>
         </p>
-        <Button variant="outline" size="sm" onClick={onClear}>
-          <X /> Clear
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={exportExcel}>
+            <Download /> Excel
+          </Button>
+          <Button variant="outline" size="sm" onClick={onClear}>
+            <X /> Clear
+          </Button>
+        </div>
       </div>
 
       <div className="overflow-auto rounded-xl border border-border">
@@ -530,6 +591,34 @@ export function ContractsClient() {
       })),
     [quarterly],
   );
+
+  // Export the quarterly buy totals (one row per code) to an .xlsx. Codes the
+  // user removed from the Total buy are flagged in a "مستبعد" column.
+  const exportQuarterly = async () => {
+    if (quarterly.totals.length === 0) {
+      toast.error("لا توجد بيانات للتصدير");
+      return;
+    }
+    try {
+      const data = quarterly.totals.map((t) => ({
+        "كود الصنف": t.code,
+        "اسم الصنف": t.product,
+        [QUARTER_LABELS[0]]: t.quarters[0],
+        [QUARTER_LABELS[1]]: t.quarters[1],
+        [QUARTER_LABELS[2]]: t.quarters[2],
+        [QUARTER_LABELS[3]]: t.quarters[3],
+        [`${QUARTER_TOTAL_LABEL} (${CURRENCY})`]: t.total,
+        مستبعد: excludedCodes.has(t.code) ? "نعم" : "",
+      }));
+      await downloadSheet(
+        data,
+        "Quarterly",
+        `contracts-quarterly-${safeFileStem(name)}.xlsx`,
+      );
+    } catch {
+      toast.error("تعذّر تصدير الملف");
+    }
+  };
 
   const addPurchaseFiles = React.useCallback(async (files: File[]) => {
     const htmls = files.filter(isHtml);
@@ -1147,9 +1236,18 @@ export function ContractsClient() {
                         }),
                     }}
                     rightToolbar={
-                      <Button variant="outline" size="sm" onClick={clearAll}>
-                        <X /> Clear
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={exportQuarterly}
+                        >
+                          <Download /> Excel
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={clearAll}>
+                          <X /> Clear
+                        </Button>
+                      </div>
                     }
                   />
 
