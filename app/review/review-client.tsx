@@ -91,6 +91,12 @@ const LATE_AFTER_DAYS = 4;
 // stale (a previous cycle), so it reads as "Not sent" here.
 const SENT_WINDOW_DAYS = 7;
 
+// If a code that was marked done/ignored reappears this soon after it was marked,
+// don't carry the old status over — surface it as a fresh, unmarked row. A quick
+// reappearance means it wasn't really settled (e.g. ordered on the 10th but still
+// showing up on the 15th), so it should be reviewed again rather than hidden.
+const REAPPEAR_WINDOW_DAYS = 5;
+
 // Present a stored "YYYY-MM-DD" date (as used by the Orders tab) in the local
 // locale format; anything that isn't that shape is shown as-is.
 const displayDate = (v: string): string =>
@@ -547,9 +553,18 @@ export function ReviewClient() {
             const meta = history[normCode(r[codeKey])];
             if (!meta) return;
             const id = String(i);
-            if (meta.status === "done") carriedDone.add(id);
-            else if (meta.status === "ignored") carriedIgnored.add(id);
-            if (meta.status && meta.at) carriedAt.set(id, meta.at);
+            // Reappeared within the window of when it was marked: don't carry the
+            // done/ignored status over — treat it as a fresh, unmarked row. The
+            // category (if any) still carries, since it's not a done/ignored state.
+            const reappearedSoon =
+              meta.status != null &&
+              meta.at != null &&
+              daysSince(meta.at, uploadedNow) <= REAPPEAR_WINDOW_DAYS;
+            if (!reappearedSoon) {
+              if (meta.status === "done") carriedDone.add(id);
+              else if (meta.status === "ignored") carriedIgnored.add(id);
+              if (meta.status && meta.at) carriedAt.set(id, meta.at);
+            }
             if (meta.category) carriedCat.set(id, meta.category);
           });
         }
@@ -966,9 +981,69 @@ export function ReviewClient() {
     }
   }, [searchQuery]);
 
+  // Drop every row currently marked done or ignored out of the open sheet,
+  // leaving only the still-pending rows. Row ids are array indices, so the kept
+  // rows are re-indexed and their status date / category re-keyed to match.
+  // Returns how many rows were removed.
+  const removeMarkedRows = React.useCallback((): number => {
+    const kept: number[] = [];
+    rows.forEach((_, i) => {
+      const id = String(i);
+      if (!completed.has(id) && !ignored.has(id)) kept.push(i);
+    });
+    const removed = rows.length - kept.length;
+    if (removed === 0) return 0;
+
+    const newStatusAt = new Map<string, number>();
+    const newCategory = new Map<string, string>();
+    kept.forEach((oldI, newI) => {
+      const at = statusAt.get(String(oldI));
+      if (at != null) newStatusAt.set(String(newI), at);
+      const cat = category.get(String(oldI));
+      if (cat) newCategory.set(String(newI), cat);
+    });
+
+    setRows(kept.map((i) => rows[i]));
+    setCompleted(new Set());
+    setIgnored(new Set());
+    setStatusAt(newStatusAt);
+    setCategory(newCategory);
+    setSelected(new Set());
+    return removed;
+  }, [rows, completed, ignored, statusAt, category]);
+
+  // Clear the done/ignored status on every row in the open sheet at once — the
+  // rows all stay, they just go back to pending (their status date drops too).
+  // Category is left untouched. Handy to re-review a whole sheet from scratch.
+  const unmarkAll = () => {
+    if (completed.size === 0 && ignored.size === 0) {
+      toast.info("Nothing is marked done or ignored.");
+      return;
+    }
+    const count = completed.size + ignored.size;
+    setCompleted(new Set());
+    setIgnored(new Set());
+    setStatusAt(new Map());
+    setSelected(new Set());
+    toast.success(`Un-marked ${count} row${count === 1 ? "" : "s"}.`);
+  };
+
+  // "Start clean sheet": unlink from history AND strip the marked rows out of the
+  // current sheet, so what's left is just the pending items on a standalone sheet.
+  const startCleanSheet = () => {
+    const removed = removeMarkedRows();
+    setLinkHistory(false);
+    toast.success(
+      removed > 0
+        ? `Clean sheet — removed ${removed} done/ignored row${removed === 1 ? "" : "s"}. New uploads won't carry over.`
+        : "Clean sheet — new uploads won't carry over.",
+    );
+  };
+
   // Make the current sheet the baseline that future sheets compare against:
   // wipe the accumulated history, then re-seed it from this sheet's marks. Also
-  // re-enables linking so the next upload actually compares against it.
+  // re-enables linking so the next upload actually compares against it, and
+  // strips the done/ignored rows so the starter shows only pending items.
   const setAsStarter = async () => {
     try {
       await clearCodeStatuses();
@@ -995,8 +1070,13 @@ export function ReviewClient() {
         await mergeCodeStatuses(updates);
       }
       setLinkHistory(true);
+      // History is seeded from the marks above, so the marked rows can now be
+      // dropped from the sheet — leaving the starter showing only pending items.
+      const removed = removeMarkedRows();
       toast.success(
-        "This sheet is now the starter — future sheets compare against it.",
+        removed > 0
+          ? `This sheet is now the starter — removed ${removed} done/ignored row${removed === 1 ? "" : "s"}, future sheets compare against it.`
+          : "This sheet is now the starter — future sheets compare against it.",
       );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't set the starter");
@@ -1108,7 +1188,9 @@ export function ReviewClient() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setLinkHistory((v) => !v)}
+            onClick={() =>
+              linkHistory ? startCleanSheet() : setLinkHistory(true)
+            }
           >
             {linkHistory ? (
               <>
@@ -1398,6 +1480,11 @@ export function ReviewClient() {
               >
                 <EyeOff />
                 {hideDone ? "Show done" : "Hide done"}
+              </Button>
+            )}
+            {(completedCount > 0 || ignored.size > 0) && (
+              <Button variant="outline" onClick={unmarkAll}>
+                <RotateCcw /> Un-mark all
               </Button>
             )}
             {codeCol && (
