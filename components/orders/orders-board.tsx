@@ -16,6 +16,7 @@ import {
   CompanyExpiryModal,
   DaysBadge,
 } from "@/components/expiry/company-expiry-modal";
+import { FlyingSearchModal } from "@/components/orders/flying-search";
 import { daysUntilExpiry, normalizeCompany, type ExpiryRow } from "@/lib/expiry";
 
 // The "Display exp" cell: when the saved expiry snapshot has items for this
@@ -409,6 +410,7 @@ export function OrdersBoard() {
     Set<string>
   >(new Set());
   const [openExpiry, setOpenExpiry] = React.useState<string | null>(null);
+  const [flyingSearch, setFlyingSearch] = React.useState(false);
   const today = React.useMemo(() => new Date(), []);
   const [showForm, setShowForm] = React.useState(false);
   const [form, setForm] = React.useState<Record<string, string>>(emptyForm);
@@ -946,6 +948,15 @@ export function OrdersBoard() {
         className="hidden"
         onChange={onPickFile}
       />
+
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => setFlyingSearch(true)}
+        title="Search all flying-tasfya sheets by code or product name"
+      >
+        <Plane /> Search Flying
+      </Button>
 
       {/* Store-wide stock — saved on this PC, sliced per company at tasfya time. */}
       <Button
@@ -1521,6 +1532,10 @@ export function OrdersBoard() {
           today={today}
           onClose={() => setOpenExpiry(null)}
         />
+      )}
+
+      {flyingSearch && (
+        <FlyingSearchModal onClose={() => setFlyingSearch(false)} />
       )}
     </div>
   );

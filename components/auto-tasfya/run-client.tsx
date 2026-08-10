@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -8,12 +9,15 @@ import {
   ArrowUp,
   ArrowUpDown,
   Check,
+  Copy,
   Filter,
   Loader2,
   PackageCheck,
   PackageX,
+  Plane,
   Save,
   Search,
+  StickyNote,
   X,
 } from "lucide-react";
 
@@ -23,6 +27,13 @@ import { monthLabel } from "@/lib/dates";
 import { loadStock } from "@/lib/tasfya/stockCache";
 import { stockForCompany } from "@/lib/tasfya/stock";
 import { bonusPercent, computeReport } from "@/lib/tasfya/report";
+import {
+  parseCell,
+  effRemaining,
+  fmtBalance,
+  type FlyingColumn,
+  type FlyingRow,
+} from "@/lib/tasfya/flying";
 import type {
   ExtraItem,
   PurchaseLine,
@@ -160,6 +171,14 @@ export function RunClient() {
     referenceDate: string;
   } | null>(null);
 
+  // Flying-tasfya (تصفية ع الطاير) sheet for this month/company, looked up per
+  // code when the user clicks a code cell. `null` until loaded; the map is empty
+  // when there is no saved sheet.
+  const [flying, setFlying] = React.useState<{
+    columns: FlyingColumn[];
+    byCode: Map<string, FlyingRow>;
+  } | null>(null);
+
   const [edits, setEdits] = React.useState<Record<string, string>>({});
   const [saving, setSaving] = React.useState(false);
   const [savedAt, setSavedAt] = React.useState<string | null>(null);
@@ -171,6 +190,7 @@ export function RunClient() {
     DEFAULT_SORT,
   );
   const [settle, setSettle] = React.useState<Set<SettleCat>>(new Set());
+  const [flyingOnly, setFlyingOnly] = React.useState(false);
   const [menu, setMenu] = React.useState<{
     col: ColKey;
     x: number;
@@ -247,6 +267,57 @@ export function RunClient() {
       active = false;
     };
   }, [month, company]);
+
+  // Load the flying sheet once so each code can show its distributor breakdown.
+  React.useEffect(() => {
+    if (!month || !company) return;
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/flying?month=${encodeURIComponent(month)}&company=${encodeURIComponent(company)}`,
+        );
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const sheet = data.sheet;
+        const columns: FlyingColumn[] = (sheet?.columns ?? []).map(
+          (c: FlyingColumn) => ({ id: c.id, name: c.name ?? "" }),
+        );
+        const byCode = new Map<string, FlyingRow>();
+        for (const r of sheet?.rows ?? []) {
+          const row: FlyingRow = {
+            code: r.code ?? "",
+            name: r.name ?? "",
+            order: Number(r.order) || 0,
+            cells: r.cells && typeof r.cells === "object" ? r.cells : {},
+            note: typeof r.note === "string" ? r.note : "",
+            remainingOverride:
+              typeof r.remainingOverride === "number"
+                ? r.remainingOverride
+                : null,
+          };
+          if (row.code) byCode.set(row.code.trim(), row);
+        }
+        if (active) setFlying({ columns, byCode });
+      } catch {
+        if (active) setFlying({ columns: [], byCode: new Map() });
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [month, company]);
+
+  // A row is "ع الطاير": its settlement is negative (short) yet the same code is
+  // covered (الباقى = 0) on the flying sheet — matches the badge on the code.
+  const isCoveredOnFlying = React.useCallback(
+    (code: string, tasfya: number) => {
+      if (!flying || tasfya >= 0) return false;
+      const r = flying.byCode.get(code.trim());
+      return !!r && effRemaining(r, flying.columns) === 0;
+    },
+    [flying],
+  );
 
   const effTasfya = React.useCallback(
     (code: string, base: number) => {
@@ -346,11 +417,18 @@ export function RunClient() {
     return c;
   }, [filteredRows]);
 
+  const flyingCount = React.useMemo(
+    () =>
+      filteredRows.filter((r) => isCoveredOnFlying(r.code, r.tasfya)).length,
+    [filteredRows, isCoveredOnFlying],
+  );
+
   const visibleRows = React.useMemo(() => {
     let out =
       settle.size === 0
         ? filteredRows
         : filteredRows.filter((r) => settle.has(settleCat(r.tasfya)));
+    if (flyingOnly) out = out.filter((r) => isCoveredOnFlying(r.code, r.tasfya));
     if (sort) {
       const col = colByKey[sort.col];
       out = [...out].sort((a, b) => {
@@ -364,7 +442,7 @@ export function RunClient() {
       });
     }
     return out;
-  }, [filteredRows, settle, sort, colByKey]);
+  }, [filteredRows, settle, flyingOnly, isCoveredOnFlying, sort, colByKey]);
 
   const toggleSettle = (k: SettleCat) =>
     setSettle((prev) => {
@@ -408,6 +486,7 @@ export function RunClient() {
     setSearch("");
     setFilters({});
     setSettle(new Set());
+    setFlyingOnly(false);
   };
 
   const fmt = (col: ColKey, v: string) =>
@@ -479,7 +558,10 @@ export function RunClient() {
 
   const hasStock = stockCount !== null;
   const activeFilters =
-    Object.keys(filters).length + (search.trim() ? 1 : 0) + settle.size;
+    Object.keys(filters).length +
+    (search.trim() ? 1 : 0) +
+    settle.size +
+    (flyingOnly ? 1 : 0);
 
   return (
     <main dir="ltr" className="mx-auto w-full max-w-[120rem] space-y-4 p-6">
@@ -557,6 +639,21 @@ export function RunClient() {
               tone="red"
               onClick={() => toggleSettle("neg")}
             />
+            <button
+              type="button"
+              onClick={() => setFlyingOnly((v) => !v)}
+              aria-pressed={flyingOnly}
+              title="التسوية سالبة لكن الباقى في تصفية ع الطاير = 0"
+              className={cn(
+                "ms-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-shadow",
+                "bg-sky-500/15 text-sky-700 dark:text-sky-400 ring-sky-500",
+                flyingOnly
+                  ? "ring-2 ring-offset-1 ring-offset-background"
+                  : "opacity-90 hover:opacity-100",
+              )}
+            >
+              <Plane className="size-3.5" /> ع الطاير {flyingCount}
+            </button>
           </div>
 
           {/* Search + count */}
@@ -671,9 +768,13 @@ export function RunClient() {
                         accentClass(row.tasfya),
                       )}
                     >
-                      {row.code}
+                      <FlyingCodeCell
+                        code={row.code}
+                        tasfya={row.tasfya}
+                        flying={flying}
+                      />
                     </td>
-                    <td className="px-3 py-3 text-right align-middle" dir="auto">
+                    <td className="px-3 py-3 text-center align-middle" dir="auto">
                       {row.name}
                     </td>
                     <td className="px-3 py-3 text-center align-middle">
@@ -948,6 +1049,212 @@ export function RunClient() {
         </div>
       )}
     </main>
+  );
+}
+
+function flyingRemClass(rem: number): string {
+  if (rem < 0) return "text-red-600 dark:text-red-400";
+  if (rem === 0) return "text-emerald-600 dark:text-emerald-400";
+  return "text-yellow-500 dark:text-yellow-400";
+}
+
+// Click a code to peek at its تصفية ع الطاير row: distributor breakdown, بونص,
+// الباقى and any note. Portalled to <body> so the sticky/overflow table never
+// clips it.
+function FlyingCodeCell({
+  code,
+  tasfya,
+  flying,
+}: {
+  code: string;
+  tasfya: number;
+  flying: { columns: FlyingColumn[]; byCode: Map<string, FlyingRow> } | null;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef<HTMLButtonElement>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const row = flying?.byCode.get(code.trim()) ?? null;
+  const columns = flying?.columns ?? [];
+  const rem = row ? effRemaining(row, columns) : 0;
+  const hasFlying = !!row;
+  // Auto Tasfya says still short (negative), but Flying tasfya shows it covered
+  // (الباقى = 0) — flag it so it can be settled from الطاير.
+  const coveredOnFlying = tasfya < 0 && hasFlying && rem === 0;
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast.success(`تم نسخ الكود ${code}`);
+    } catch {
+      toast.error("تعذّر نسخ الكود");
+    }
+  };
+
+  return (
+    <>
+      <span className="flex w-full items-center gap-1">
+        <button
+          ref={ref}
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          title="عرض تصفية ع الطاير"
+          className={cn(
+            "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-primary/10 hover:text-primary",
+            open && "bg-primary/10 text-primary",
+          )}
+        >
+          <Plane
+            className={cn(
+              "size-3 shrink-0",
+              hasFlying ? "text-primary/70" : "text-muted-foreground/40",
+            )}
+          />
+          {code}
+        </button>
+        <button
+          type="button"
+          onClick={copyCode}
+          title="نسخ الكود"
+          aria-label="نسخ الكود"
+          className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Copy className="size-3.5" />
+        </button>
+        {coveredOnFlying && (
+          <span
+            dir="rtl"
+            title="التسوية سالبة لكن الباقى في تصفية ع الطاير = 0"
+            className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400"
+          >
+            <Plane className="size-3 shrink-0" />
+            ع الطاير
+          </span>
+        )}
+      </span>
+      {open &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => setOpen(false)}
+          >
+            <div
+              dir="rtl"
+              onClick={(e) => e.stopPropagation()}
+              className="flex max-h-[90vh] max-w-[92vw] flex-col overflow-auto rounded-lg border border-border bg-card p-3 text-foreground shadow-xl"
+            >
+              <div className="mb-2 flex items-center justify-between gap-3 border-b border-border pb-2">
+                <span className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Plane className="size-4 text-primary" /> تصفية ع الطاير
+                </span>
+                <span className="font-mono text-xs text-muted-foreground" dir="ltr">
+                  {code}
+                </span>
+              </div>
+
+              {flying === null ? (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  جارٍ التحميل…
+                </p>
+              ) : !row ? (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  لا يوجد هذا الكود في تصفية ع الطاير
+                </p>
+              ) : (
+                <div className="max-w-[86vw] overflow-x-auto rounded-md border border-border">
+                  <table className="w-full border-collapse text-sm [&_td]:border [&_td]:border-border [&_th]:border [&_th]:border-border">
+                    <thead>
+                      <tr className="bg-muted text-center">
+                        <th className="whitespace-nowrap px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                          الكود
+                        </th>
+                        <th className="min-w-[16rem] whitespace-nowrap px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                          اسم الصنف
+                        </th>
+                        <th className="whitespace-nowrap px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                          الباقى
+                        </th>
+                        <th className="whitespace-nowrap px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                          الكمية
+                        </th>
+                        {columns.map((col) => (
+                          <th
+                            key={col.id}
+                            className="whitespace-nowrap px-2 py-1.5 text-xs font-semibold text-muted-foreground"
+                          >
+                            <span dir="auto">{col.name || "—"}</span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="bg-card">
+                        <td className="whitespace-nowrap px-2 py-1.5 text-center tabular-nums">
+                          <span className="inline-flex items-center justify-center gap-1.5">
+                            <span dir="ltr">{row.code}</span>
+                            {row.note && row.note.trim() && (
+                              <StickyNote
+                                className="size-3.5 text-amber-500"
+                                aria-label="note"
+                              />
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-3 py-1.5 text-center" dir="auto">
+                          {row.name}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-3 py-1.5 text-center tabular-nums",
+                            flyingRemClass(rem),
+                          )}
+                          dir="ltr"
+                        >
+                          {fmtBalance(rem)}
+                        </td>
+                        <td className="px-3 py-1.5 text-center tabular-nums" dir="ltr">
+                          {row.order.toLocaleString("en-US")}
+                        </td>
+                        {columns.map((col) => {
+                          const { base, bounce } = parseCell(row.cells[col.id]);
+                          const bpct = bonusPercent(base + bounce, bounce);
+                          return (
+                            <td
+                              key={col.id}
+                              className="px-2 py-1.5 text-center tabular-nums"
+                              dir="ltr"
+                            >
+                              {base || bounce ? base.toLocaleString("en-US") : ""}
+                              {bounce > 0 && (
+                                <div className="-mt-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                  +{bpct}% bounce
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    </tbody>
+                  </table>
+                  {row.note && row.note.trim() && (
+                    <div className="flex items-start gap-1.5 border-t border-border bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+                      <StickyNote className="mt-0.5 size-3.5 shrink-0" />
+                      <span dir="auto">{row.note}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 

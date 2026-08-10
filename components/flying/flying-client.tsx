@@ -24,7 +24,12 @@ import { monthLabel } from "@/lib/dates";
 import { parseHtmlTable } from "@/lib/tasfya/parseTable";
 import { parseSupplyOrders } from "@/lib/tasfya/supplyOrders";
 import { bonusPercent } from "@/lib/tasfya/report";
-import { DEFAULT_DISTRIBUTORS, parseCell } from "@/lib/tasfya/flying";
+import {
+  DEFAULT_DISTRIBUTORS,
+  parseCell,
+  effRemaining,
+  fmtBalance,
+} from "@/lib/tasfya/flying";
 
 type Column = { id: string; name: string };
 type Row = {
@@ -39,42 +44,10 @@ type Row = {
 let idSeq = 0;
 const newId = () => `c${Date.now().toString(36)}${(idSeq++).toString(36)}`;
 
-// الباقى for a row — a signed balance. The بونص (bounce) is free extra, so it
-// helps cover the order but is NOT counted as over-buying:
-//   > 0  → the paid quantity ALONE exceeds the order (real over-purchase → "+N")
-//   = 0  → order covered (qty, or qty + bounce, reaches the ordered amount)
-//   < 0  → still short by that much, even counting the bounce (shown as "-N")
-function remainingOf(row: Row, columns: Column[]): number {
-  let base = 0;
-  let bounce = 0;
-  for (const c of columns) {
-    const v = parseCell(row.cells[c.id]);
-    base += v.base;
-    bounce += v.bounce;
-  }
-  if (base > row.order) return base - row.order; // over-bought on paid qty
-  const taken = base + bounce;
-  if (taken >= row.order) return 0; // covered (bounce filled the gap)
-  return taken - row.order; // still short
-}
-
-// Effective الباقى: a manual override, when present, wins over the computed one.
-function effRemaining(row: Row, columns: Column[]): number {
-  return typeof row.remainingOverride === "number"
-    ? row.remainingOverride
-    : remainingOf(row, columns);
-}
-
 function remainingClass(rem: number): string {
   if (rem < 0) return "text-red-600 dark:text-red-400 font-semibold";
   if (rem === 0) return "text-emerald-600 dark:text-emerald-400 font-semibold";
   return "text-yellow-500 dark:text-yellow-400 font-semibold";
-}
-
-// Format the signed الباقى balance: surplus gets an explicit "+", shortfall keeps
-// its natural "-", exact shows plain 0.
-function fmtBalance(v: number): string {
-  return (v > 0 ? "+" : "") + v.toLocaleString("en-US");
 }
 
 /* ------------------------------------------------------------------ */
