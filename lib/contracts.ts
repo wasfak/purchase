@@ -369,6 +369,262 @@ export function computeInsights(rows: PurchaseRow[]): Insights {
   };
 }
 
+// --- Supplier margin (best deal per supplier / per item) ------------------
+//
+// In this report price ≈ cost on nearly every line, so profit does NOT come
+// from a price−cost gap. It comes from the discounts (أساسي base, plus إضافي /
+// خاص) and بونص (free units, أساسي = 100%). The "best" supplier is the one that
+// hands back the most margin on the same items:
+//
+//   discount% of a paid line = 1 − (1−أساسي)(1−إضافي)(1−خاص)  [compounded]
+//   bonus%   of a supplier   = free units ÷ paid units × 100
+//   bonus value (EGP)        = free units × سعر الجمهور
+//     where سعر الجمهور = price ÷ [(1−أساسي)(1−إضافي)(1−خاص)] — the report's
+//     price column is the cost, so we divide the discounts back out.
+//   credit%  of a supplier   = credit months (آجل) × monthly rate (≈1.4%)
+//   margin%                  = weighted-avg discount% + bonus% + credit%
+//
+// discount% is weighted by line value (كمية الوارد × سعر الوحدة شامل الضريبة) so
+// large buys count more than a single-unit line. credit% is the time value of
+// deferred payment: a supplier that lets us pay 3 months later at 1.4%/month is
+// effectively handing back ~4.2% — real margin, entered per supplier since the
+// report carries no payment terms.
+
+/** Per-supplier payment terms fed into the margin calc. */
+export type CreditConfig = {
+  /** Extra effective discount earned per month of credit, e.g. 1.4 (%). */
+  monthlyRate: number;
+  /** Supplier name → months of credit (آجل) they grant. */
+  months: Record<string, number>;
+};
+
+export type SupplierMargin = {
+  name: string;
+  /** Units bought on paid (non-bonus) lines. */
+  paidUnits: number;
+  /** Σ qty × سعر الوحدة شامل الضريبة over paid lines (value bought). */
+  spend: number;
+  /** Value-weighted average of (أساسي + إضافي + خاص). */
+  avgDiscountPct: number;
+  /** Free units received on بونص lines (أساسي = 100%). */
+  bonusUnits: number;
+  /** bonusUnits ÷ paidUnits × 100. */
+  bonusPct: number;
+  /** EGP value of the free units (bonusUnits × the item's paid unit price). */
+  bonusValue: number;
+  /** Months of credit (آجل) configured for this supplier. */
+  creditMonths: number;
+  /** creditMonths × monthlyRate — margin from deferred payment. */
+  creditPct: number;
+  /** avgDiscountPct + bonusPct + creditPct — the headline margin figure. */
+  marginPct: number;
+  /** Distinct item codes bought from this supplier. */
+  items: number;
+};
+
+export type ItemSupplierMargin = {
+  supplier: string;
+  paidUnits: number;
+  spend: number;
+  avgDiscountPct: number;
+  bonusUnits: number;
+  bonusPct: number;
+  creditMonths: number;
+  creditPct: number;
+  marginPct: number;
+};
+
+export type ItemMargin = {
+  code: string;
+  product: string;
+  /** Every supplier this code was bought from, best margin% first. */
+  suppliers: ItemSupplierMargin[];
+  /** The best-margin supplier, or null if the code had no paid lines. */
+  best: ItemSupplierMargin | null;
+  /** Margin% lead of the best supplier over the runner-up (0 if only one). */
+  gap: number;
+  /** Σ spend across suppliers — used to surface high-value items first. */
+  spend: number;
+};
+
+type MarginAccum = {
+  paidUnits: number;
+  spend: number;
+  discWeighted: number; // Σ discount% × lineValue
+  bonusUnits: number;
+};
+
+const newAccum = (): MarginAccum => ({
+  paidUnits: 0,
+  spend: 0,
+  discWeighted: 0,
+  bonusUnits: 0,
+});
+
+function finishAccum(a: MarginAccum): {
+  paidUnits: number;
+  spend: number;
+  avgDiscountPct: number;
+  bonusUnits: number;
+  bonusPct: number;
+  marginPct: number;
+} {
+  const avgDiscountPct = a.spend > 0 ? a.discWeighted / a.spend : 0;
+  const bonusPct = a.paidUnits > 0 ? (a.bonusUnits / a.paidUnits) * 100 : 0;
+  return {
+    paidUnits: round2(a.paidUnits),
+    spend: round2(a.spend),
+    avgDiscountPct: round2(avgDiscountPct),
+    bonusUnits: round2(a.bonusUnits),
+    bonusPct: round2(bonusPct),
+    marginPct: round2(avgDiscountPct + bonusPct),
+  };
+}
+
+/**
+ * Roll purchase lines up into per-supplier and per-item margin figures so the
+ * "Margin" view can rank who gives the best deal overall and for each code.
+ */
+export function computeSupplierMargins(
+  rows: PurchaseRow[],
+  credit?: CreditConfig,
+): {
+  bySupplier: SupplierMargin[];
+  byItem: ItemMargin[];
+} {
+  const rate = credit?.monthlyRate ?? 0;
+  const monthsOf = (name: string) => credit?.months?.[name] ?? 0;
+  const creditPctOf = (name: string) => round2(monthsOf(name) * rate);
+  const supplierMap = new Map<string, MarginAccum & { codes: Set<string> }>();
+  const itemMap = new Map<
+    string,
+    { product: string; publicPrice: number; suppliers: Map<string, MarginAccum> }
+  >();
+
+  for (const r of rows) {
+    const supplier = (r[CONTRACT_COLUMNS.supplier] ?? "").trim();
+    if (!supplier) continue;
+    const code = r[CONTRACT_COLUMNS.code];
+    const qty = Number(r[CONTRACT_COLUMNS.qty]) || 0;
+    const isBonus = Number(r[CONTRACT_COLUMNS.basic]) === 100;
+
+    let sAcc = supplierMap.get(supplier);
+    if (!sAcc) {
+      sAcc = { ...newAccum(), codes: new Set() };
+      supplierMap.set(supplier, sAcc);
+    }
+    let item = itemMap.get(code);
+    if (!item) {
+      item = {
+        product: r[CONTRACT_COLUMNS.product] || "",
+        publicPrice: 0,
+        suppliers: new Map(),
+      };
+      itemMap.set(code, item);
+    }
+    let iAcc = item.suppliers.get(supplier);
+    if (!iAcc) {
+      iAcc = newAccum();
+      item.suppliers.set(supplier, iAcc);
+    }
+    if (code) sAcc.codes.add(code);
+
+    if (isBonus) {
+      sAcc.bonusUnits += qty;
+      iAcc.bonusUnits += qty;
+      continue;
+    }
+
+    const price = Number(r[CONTRACT_COLUMNS.priceIncTax]) || 0;
+    const lineValue = qty * price;
+    // Discounts compound, they don't add: إضافي is taken off the price *after*
+    // أساسي, and خاص after that. So the effective discount is
+    //   1 − (1−أساسي)(1−إضافي)(1−خاص)
+    // e.g. 10% + 5% + 2% = 16.21% effective, not 17%.
+    const b = (Number(r[CONTRACT_COLUMNS.basic]) || 0) / 100;
+    const e = (Number(r[CONTRACT_COLUMNS.extra]) || 0) / 100;
+    const s = (Number(r[CONTRACT_COLUMNS.special]) || 0) / 100;
+    const keptFraction = (1 - b) * (1 - e) * (1 - s);
+    const discountPct = (1 - keptFraction) * 100;
+
+    // The report's price column is the COST (سعر الجمهور × (1 − discounts)), not
+    // the public price. Recover سعر الجمهور by dividing the discounts back out:
+    //   سعر الجمهور = price ÷ [(1−أساسي)(1−إضافي)(1−خاص)]
+    // It's invariant per item, so we keep the highest seen (guards rounding /
+    // mid-year price changes). Bonus units are valued at this price.
+    const publicPrice = keptFraction > 0 ? price / keptFraction : price;
+    if (publicPrice > item.publicPrice) item.publicPrice = publicPrice;
+
+    sAcc.paidUnits += qty;
+    sAcc.spend += lineValue;
+    sAcc.discWeighted += discountPct * lineValue;
+
+    iAcc.paidUnits += qty;
+    iAcc.spend += lineValue;
+    iAcc.discWeighted += discountPct * lineValue;
+  }
+
+  // Bonus value (EGP) per supplier, summed across codes as we build byItem —
+  // each code's free units × its سعر الجمهور (the item's highest unit price).
+  const supplierBonusValue = new Map<string, number>();
+
+  const byItem: ItemMargin[] = [...itemMap.entries()]
+    .map(([code, e]) => {
+      const publicPrice = e.publicPrice; // سعر الجمهور for this code
+      const suppliers: ItemSupplierMargin[] = [...e.suppliers.entries()]
+        .map(([supplier, a]) => {
+          const base = finishAccum(a);
+          const creditMonths = monthsOf(supplier);
+          const creditPct = creditPctOf(supplier);
+          const bonusValue = round2(a.bonusUnits * publicPrice);
+          supplierBonusValue.set(
+            supplier,
+            (supplierBonusValue.get(supplier) ?? 0) + bonusValue,
+          );
+          return {
+            supplier,
+            ...base,
+            bonusValue,
+            creditMonths,
+            creditPct,
+            marginPct: round2(base.marginPct + creditPct),
+          };
+        })
+        .sort((x, y) => y.marginPct - x.marginPct);
+      const spend = round2(suppliers.reduce((s, x) => s + x.spend, 0));
+      // Only suppliers with paid volume can be "best"; bonus-only rows still
+      // show in the breakdown but never win the code on their own.
+      const ranked = suppliers.filter((s) => s.paidUnits > 0);
+      const best = ranked[0] ?? null;
+      const gap =
+        ranked.length >= 2
+          ? round2(ranked[0].marginPct - ranked[1].marginPct)
+          : 0;
+      return { code, product: e.product, suppliers, best, gap, spend };
+    })
+    .filter((it) => it.best !== null)
+    .sort((a, b) => b.spend - a.spend);
+
+  const bySupplier: SupplierMargin[] = [...supplierMap.entries()]
+    .map(([name, a]) => {
+      const base = finishAccum(a);
+      const creditMonths = monthsOf(name);
+      const creditPct = creditPctOf(name);
+      return {
+        name,
+        items: a.codes.size,
+        ...base,
+        bonusValue: round2(supplierBonusValue.get(name) ?? 0),
+        creditMonths,
+        creditPct,
+        marginPct: round2(base.marginPct + creditPct),
+      };
+    })
+    .sort((x, y) => y.marginPct - x.marginPct);
+
+  return { bySupplier, byItem };
+}
+
 /**
  * Extract item codes from a stock HTML/HTM export. In these reports the code
  * lives in the LAST column ("الكود") of each row — we must read only that cell.

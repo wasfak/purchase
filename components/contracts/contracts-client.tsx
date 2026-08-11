@@ -45,6 +45,7 @@ import {
   type ContractMeta,
 } from "@/lib/contracts-store";
 import { YasmenView } from "@/components/contracts/yasmen-view";
+import { MarginView } from "@/components/contracts/margin-view";
 
 const HTML_ACCEPT = ".htm,.html";
 const isHtml = (f: File) => /\.html?$/i.test(f.name);
@@ -98,7 +99,7 @@ const QUARTERLY_TABLE_COLUMNS = [
 ];
 const QUARTERLY_NUMERIC = new Set<string>([...Q_TABLE_LABELS, TOTAL_TABLE_LABEL]);
 
-type View = "lines" | "quarters" | "yasmen";
+type View = "lines" | "quarters" | "yasmen" | "margin";
 
 // Horizontal bar list used for "spend by supplier" and "top items by spend".
 function HBars({
@@ -975,6 +976,7 @@ export function ContractsClient() {
               [
                 ["quarters", "Quarterly totals"],
                 ["lines", "Purchase lines"],
+                ["margin", "Margin"],
                 ["yasmen", "Yasmen mode"],
               ] as [View, string][]
             ).map(([v, label]) => (
@@ -1341,6 +1343,20 @@ export function ContractsClient() {
             </>
           ) : view === "lines" ? (
             <LinesView
+              rows={supplierFilteredRows}
+              onClear={clearAll}
+              supplierFilter={
+                <SupplierChips
+                  suppliers={suppliers}
+                  excluded={excludedSuppliers}
+                  onToggle={toggleSupplier}
+                  onSelectAll={() => setExcludedSuppliers(new Set())}
+                  onClear={() => setExcludedSuppliers(new Set(suppliers))}
+                />
+              }
+            />
+          ) : view === "margin" ? (
+            <MarginView
               rows={supplierFilteredRows}
               onClear={clearAll}
               supplierFilter={
