@@ -8,7 +8,9 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  CalendarDays,
   Check,
+  CircleDot,
   Copy,
   Filter,
   Loader2,
@@ -64,6 +66,9 @@ type ColKey =
   | "basicPct"
   | "extraPct"
   | "specialPct";
+
+// One day a code showed up in an uploaded "0 codes" file.
+type ZeroHit = { date: string; order: string; supplier: string };
 
 type SettleCat = "zero" | "pos" | "neg";
 function settleCat(t: number): SettleCat {
@@ -178,6 +183,13 @@ export function RunClient() {
     columns: FlyingColumn[];
     byCode: Map<string, FlyingRow>;
   } | null>(null);
+
+  // Every settled code looked up against the saved "0 codes" files, so each row
+  // can show whether (and when) it appeared there. `null` until loaded; the map
+  // only holds codes that were actually found.
+  const [zeroCodes, setZeroCodes] = React.useState<Map<string, ZeroHit[]> | null>(
+    null,
+  );
 
   const [edits, setEdits] = React.useState<Record<string, string>>({});
   const [saving, setSaving] = React.useState(false);
@@ -307,6 +319,48 @@ export function RunClient() {
       active = false;
     };
   }, [month, company]);
+
+  // Look up every settled code in the saved "0 codes" files (one batched call).
+  React.useEffect(() => {
+    if (!result) return;
+    const codes = Array.from(
+      new Set(
+        [
+          ...result.report.map((r) => r.code),
+          ...result.extraItems.map((e) => e.code),
+        ]
+          .map((c) => String(c ?? "").trim())
+          .filter(Boolean),
+      ),
+    );
+    if (codes.length === 0) {
+      setZeroCodes(new Map());
+      return;
+    }
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/zero-codes/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes }),
+        });
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const map = new Map<string, ZeroHit[]>();
+        for (const r of data.results ?? []) {
+          if (r.status === "found" && Array.isArray(r.hits) && r.hits.length > 0)
+            map.set(String(r.code).trim(), r.hits as ZeroHit[]);
+        }
+        if (active) setZeroCodes(map);
+      } catch {
+        if (active) setZeroCodes(new Map());
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [result]);
 
   // A row is "ع الطاير": its settlement is negative (short) yet the same code is
   // covered (الباقى = 0) on the flying sheet — matches the badge on the code.
@@ -772,6 +826,17 @@ export function RunClient() {
                         code={row.code}
                         tasfya={row.tasfya}
                         flying={flying}
+                        zeroLoading={row.tasfya > 0 && zeroCodes === null}
+                        zeroHits={
+                          row.tasfya > 0
+                            ? (zeroCodes?.get(row.code.trim()) ?? []).filter(
+                                (h) =>
+                                  result.referenceDate &&
+                                  h.date &&
+                                  h.date >= result.referenceDate,
+                              )
+                            : []
+                        }
                       />
                     </td>
                     <td className="px-3 py-3 text-center align-middle" dir="auto">
@@ -1065,10 +1130,14 @@ function FlyingCodeCell({
   code,
   tasfya,
   flying,
+  zeroLoading,
+  zeroHits,
 }: {
   code: string;
   tasfya: number;
   flying: { columns: FlyingColumn[]; byCode: Map<string, FlyingRow> } | null;
+  zeroLoading: boolean;
+  zeroHits: ZeroHit[];
 }) {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLButtonElement>(null);
@@ -1127,6 +1196,19 @@ function FlyingCodeCell({
         >
           <Copy className="size-3.5" />
         </button>
+        {zeroHits.length > 0 && (
+          <button
+            type="button"
+            dir="rtl"
+            onClick={() => setOpen(true)}
+            title={`موجود في ملفات الأصفار (${zeroHits.length} يوم) — اضغط للتفاصيل`}
+            className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full bg-violet-500/15 px-2 py-0.5 text-[11px] font-semibold text-violet-700 transition-colors hover:bg-violet-500/25 dark:text-violet-400"
+          >
+            <CircleDot className="size-3 shrink-0" />
+            <span dir="ltr">{zeroHits[zeroHits.length - 1].date}</span>
+            {zeroHits.length > 1 && <span>×{zeroHits.length}</span>}
+          </button>
+        )}
         {coveredOnFlying && (
           <span
             dir="rtl"
@@ -1250,6 +1332,64 @@ function FlyingCodeCell({
                   )}
                 </div>
               )}
+
+              <div className="mt-3 border-t border-border pt-2">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-1.5 text-sm font-semibold">
+                    <CircleDot className="size-4 text-violet-500" /> ملفات الأصفار
+                  </span>
+                  {zeroHits.length > 0 && (
+                    <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:text-violet-400">
+                      {zeroHits.length} يوم
+                    </span>
+                  )}
+                </div>
+                {zeroLoading ? (
+                  <p className="py-2 text-center text-xs text-muted-foreground">
+                    جارٍ التحميل…
+                  </p>
+                ) : zeroHits.length === 0 ? (
+                  <p className="py-2 text-center text-xs text-muted-foreground">
+                    لا يوجد هذا الكود في ملفات الأصفار
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto rounded-md border border-border">
+                    <table className="w-full border-collapse text-sm [&_td]:border [&_td]:border-border [&_th]:border [&_th]:border-border">
+                      <thead>
+                        <tr className="bg-muted text-center">
+                          <th className="whitespace-nowrap px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                            التاريخ
+                          </th>
+                          <th className="whitespace-nowrap px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                            الكمية
+                          </th>
+                          <th className="min-w-[12rem] whitespace-nowrap px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                            المورد
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {zeroHits.map((h, i) => (
+                          <tr key={`${h.date}-${i}`} className="bg-card">
+                            <td className="whitespace-nowrap px-3 py-1.5 text-center tabular-nums" dir="ltr">
+                              <span className="inline-flex items-center gap-1.5">
+                                <CalendarDays className="size-3.5 text-muted-foreground" />
+                                {h.date}
+                              </span>
+                            </td>
+                            <td className="px-3 py-1.5 text-center tabular-nums" dir="ltr">
+                              {h.order || "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-center" dir="auto">
+                              {h.supplier || "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           </div>,
           document.body,
