@@ -84,6 +84,14 @@ function pct(v: number): string {
   return v ? `${Number(v.toFixed(2))}%` : "—";
 }
 
+// Normalize a date to a sortable "YYYYMMDD" key so a slash-dated order
+// (2026/07/29) and a dash-dated 0-codes file (2026-08-09) compare correctly.
+function dateKey(value: string): string {
+  const m = /(\d{4})[/-](\d{1,2})[/-](\d{1,2})/.exec(String(value ?? "").trim());
+  if (!m) return "";
+  return `${m[1]}${m[2].padStart(2, "0")}${m[3].padStart(2, "0")}`;
+}
+
 function rowClass(t: number): string {
   if (t < 0) return "bg-red-50/40 dark:bg-red-950/20";
   if (t === 0) return "bg-emerald-50/40 dark:bg-emerald-950/20";
@@ -830,10 +838,11 @@ export function RunClient() {
                         zeroHits={
                           row.tasfya > 0
                             ? (zeroCodes?.get(row.code.trim()) ?? []).filter(
-                                (h) =>
-                                  result.referenceDate &&
-                                  h.date &&
-                                  h.date >= result.referenceDate,
+                                (h) => {
+                                  const order = dateKey(result.referenceDate);
+                                  const file = dateKey(h.date);
+                                  return order && file && file >= order;
+                                },
                               )
                             : []
                         }
