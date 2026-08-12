@@ -12,6 +12,7 @@ import {
   Check,
   CircleDot,
   Copy,
+  Download,
   Filter,
   Loader2,
   PackageCheck,
@@ -538,13 +539,7 @@ export function RunClient() {
     let out =
       settle.size === 0
         ? filteredRows
-        : filteredRows.filter(
-            (r) =>
-              settle.has(settleCat(r.tasfya)) ||
-              // Keep short rows under the "لم يصل" filter while they're being
-              // settled from suppliers, even after they reach/pass 0.
-              (settle.has("neg") && r.baseTasfya < 0),
-          );
+        : filteredRows.filter((r) => settle.has(settleCat(r.tasfya)));
     if (flyingOnly) out = out.filter((r) => isCoveredOnFlying(r.code, r.tasfya));
     if (sort) {
       const col = colByKey[sort.col];
@@ -674,6 +669,30 @@ export function RunClient() {
       }
       return next;
     });
+  };
+
+  // Export the currently visible rows to .xlsx: كود الصنف, اسم الصنف, التسوية.
+  const exportExcel = async () => {
+    if (visibleRows.length === 0) {
+      toast.error("لا توجد صفوف للتصدير.");
+      return;
+    }
+    try {
+      const XLSX = await import("xlsx");
+      const data = visibleRows.map((row) => ({
+        "كود الصنف": row.code,
+        "اسم الصنف": row.name,
+        التسوية: row.tasfya,
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws["!cols"] = [{ wch: 14 }, { wch: 44 }, { wch: 10 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "التسوية");
+      const safe = `${company}-${month}`.replace(/[^\w.-]+/g, "_");
+      XLSX.writeFile(wb, `auto-tasfya-${safe}.xlsx`);
+    } catch {
+      toast.error("تعذّر تصدير الملف.");
+    }
   };
 
   const save = async () => {
@@ -809,6 +828,15 @@ export function RunClient() {
               variant="outline"
               size="sm"
               className="ms-auto"
+              onClick={exportExcel}
+              title="تصدير الصفوف الظاهرة إلى Excel (كود، اسم الصنف، التسوية)"
+            >
+              <Download className="size-4" /> تصدير Excel
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               onClick={addSupplierColumn}
               title="أضف عمود مورد لصفوف لم يصل — الكمية تُخصم من التسوية"
             >
