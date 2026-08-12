@@ -84,6 +84,17 @@ function settleCat(t: number): SettleCat {
 const ENTRY =
   "flex flex-col items-center justify-center text-center min-h-[2.75rem] px-3 border-b border-border/50 last:border-b-0";
 
+// Tags that mark an item as handled/expected in its name. A لم يصل row whose
+// name carries none of these is treated as an "unmarked shortage" — flagged red.
+const NAME_MARKERS = ["#B#", "#C.C#", "#NA#"];
+const isNameMarked = (name: string): boolean => {
+  const u = (name ?? "").toUpperCase();
+  return NAME_MARKERS.some((m) => u.includes(m));
+};
+// A row still short (التسوية < 0) with no marker tag in its name.
+const isUnmarkedShort = (tasfya: number, name: string): boolean =>
+  tasfya < 0 && !isNameMarked(name);
+
 let supIdSeq = 0;
 const newSupId = () =>
   `s${Date.now().toString(36)}${(supIdSeq++).toString(36)}`;
@@ -227,6 +238,7 @@ export function RunClient() {
   );
   const [settle, setSettle] = React.useState<Set<SettleCat>>(new Set());
   const [flyingOnly, setFlyingOnly] = React.useState(false);
+  const [unmarkedOnly, setUnmarkedOnly] = React.useState(false);
   const [menu, setMenu] = React.useState<{
     col: ColKey;
     x: number;
@@ -535,12 +547,19 @@ export function RunClient() {
     [filteredRows, isCoveredOnFlying],
   );
 
+  const unmarkedCount = React.useMemo(
+    () => filteredRows.filter((r) => isUnmarkedShort(r.tasfya, r.name)).length,
+    [filteredRows],
+  );
+
   const visibleRows = React.useMemo(() => {
     let out =
       settle.size === 0
         ? filteredRows
         : filteredRows.filter((r) => settle.has(settleCat(r.tasfya)));
     if (flyingOnly) out = out.filter((r) => isCoveredOnFlying(r.code, r.tasfya));
+    if (unmarkedOnly)
+      out = out.filter((r) => isUnmarkedShort(r.tasfya, r.name));
     if (sort) {
       const col = colByKey[sort.col];
       out = [...out].sort((a, b) => {
@@ -554,7 +573,15 @@ export function RunClient() {
       });
     }
     return out;
-  }, [filteredRows, settle, flyingOnly, isCoveredOnFlying, sort, colByKey]);
+  }, [
+    filteredRows,
+    settle,
+    flyingOnly,
+    unmarkedOnly,
+    isCoveredOnFlying,
+    sort,
+    colByKey,
+  ]);
 
   const toggleSettle = (k: SettleCat) =>
     setSettle((prev) => {
@@ -599,6 +626,7 @@ export function RunClient() {
     setFilters({});
     setSettle(new Set());
     setFlyingOnly(false);
+    setUnmarkedOnly(false);
   };
 
   const fmt = (col: ColKey, v: string) =>
@@ -730,7 +758,8 @@ export function RunClient() {
     Object.keys(filters).length +
     (search.trim() ? 1 : 0) +
     settle.size +
-    (flyingOnly ? 1 : 0);
+    (flyingOnly ? 1 : 0) +
+    (unmarkedOnly ? 1 : 0);
 
   return (
     <main dir="ltr" className="mx-auto w-full max-w-[120rem] space-y-4 p-6">
@@ -822,6 +851,21 @@ export function RunClient() {
               )}
             >
               <Plane className="size-3.5" /> ع الطاير {flyingCount}
+            </button>
+            <button
+              type="button"
+              onClick={() => setUnmarkedOnly((v) => !v)}
+              aria-pressed={unmarkedOnly}
+              title="لم يصل واسم الصنف لا يحتوي #B# أو #C.C# أو #NA#"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-shadow",
+                "bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500",
+                unmarkedOnly
+                  ? "ring-2 ring-offset-1 ring-offset-background"
+                  : "opacity-90 hover:opacity-100",
+              )}
+            >
+              بدون علامة {unmarkedCount}
             </button>
             <Button
               type="button"
@@ -974,8 +1018,10 @@ export function RunClient() {
                   <tr
                     key={`${row.code}-${row.isExtra ? "x" : "r"}`}
                     className={cn(
-                      "border-b-2 border-neutral-300 last:border-0 hover:bg-muted/40 dark:border-neutral-700",
-                      rowClass(row.tasfya),
+                      "border-b-2 border-neutral-300 last:border-0 dark:border-neutral-700",
+                      isUnmarkedShort(row.tasfya, row.name)
+                        ? "bg-red-300/70 hover:bg-red-300 dark:bg-red-900/60 dark:hover:bg-red-900/70"
+                        : cn("hover:bg-muted/40", rowClass(row.tasfya)),
                     )}
                   >
                     <td
