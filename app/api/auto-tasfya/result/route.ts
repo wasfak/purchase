@@ -57,6 +57,13 @@ export async function POST(request: Request) {
     extraItems: Array.isArray(body.extraItems) ? body.extraItems : [],
     edits:
       body.edits && typeof body.edits === "object" ? body.edits : {},
+    supplierColumns: Array.isArray(body.supplierColumns)
+      ? body.supplierColumns
+      : [],
+    supplierCells:
+      body.supplierCells && typeof body.supplierCells === "object"
+        ? body.supplierCells
+        : {},
   };
 
   await connectDB();

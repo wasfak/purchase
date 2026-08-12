@@ -17,9 +17,11 @@ import {
   PackageCheck,
   PackageX,
   Plane,
+  Plus,
   Save,
   Search,
   StickyNote,
+  Truck,
   X,
 } from "lucide-react";
 
@@ -32,6 +34,7 @@ import { bonusPercent, computeReport } from "@/lib/tasfya/report";
 import {
   parseCell,
   effRemaining,
+  remainingOf,
   fmtBalance,
   type FlyingColumn,
   type FlyingRow,
@@ -79,6 +82,10 @@ function settleCat(t: number): SettleCat {
 
 const ENTRY =
   "flex flex-col items-center justify-center text-center min-h-[2.75rem] px-3 border-b border-border/50 last:border-b-0";
+
+let supIdSeq = 0;
+const newSupId = () =>
+  `s${Date.now().toString(36)}${(supIdSeq++).toString(36)}`;
 
 function pct(v: number): string {
   return v ? `${Number(v.toFixed(2))}%` : "—";
@@ -200,6 +207,14 @@ export function RunClient() {
   );
 
   const [edits, setEdits] = React.useState<Record<string, string>>({});
+  // "لم يصل" supplier columns + per-code cells (Flying-tasfya style). The base of
+  // each cell deducts from a negative التسوية; بونص only helps reach 0.
+  const [supplierColumns, setSupplierColumns] = React.useState<FlyingColumn[]>(
+    [],
+  );
+  const [supplierCells, setSupplierCells] = React.useState<
+    Record<string, Record<string, string>>
+  >({});
   const [saving, setSaving] = React.useState(false);
   const [savedAt, setSavedAt] = React.useState<string | null>(null);
 
@@ -250,6 +265,8 @@ export function RunClient() {
         );
 
         let savedEdits: Record<string, string> = {};
+        let savedSupCols: FlyingColumn[] = [];
+        let savedSupCells: Record<string, Record<string, string>> = {};
         try {
           const r = await fetch(
             `/api/auto-tasfya/result?month=${encodeURIComponent(month)}&company=${encodeURIComponent(company)}`,
@@ -258,6 +275,18 @@ export function RunClient() {
             const j = await r.json();
             if (j.result?.edits && typeof j.result.edits === "object")
               savedEdits = j.result.edits as Record<string, string>;
+            if (Array.isArray(j.result?.supplierColumns))
+              savedSupCols = j.result.supplierColumns.map(
+                (c: FlyingColumn) => ({ id: c.id, name: c.name ?? "" }),
+              );
+            if (
+              j.result?.supplierCells &&
+              typeof j.result.supplierCells === "object"
+            )
+              savedSupCells = j.result.supplierCells as Record<
+                string,
+                Record<string, string>
+              >;
             if (j.result?.updatedAt) setSavedAt(j.result.updatedAt);
           }
         } catch {
@@ -273,6 +302,8 @@ export function RunClient() {
           referenceDate: data.referenceDate,
         });
         setEdits(savedEdits);
+        setSupplierColumns(savedSupCols);
+        setSupplierCells(savedSupCells);
         if (!data.hasPos)
           setError("No pos file saved for this month. Upload it in Auto Tasfya.");
         else if (data.matchedOrders === 0)
@@ -381,14 +412,32 @@ export function RunClient() {
     [flying],
   );
 
+  // Apply the "لم يصل" supplier columns to a negative settlement. Only negative
+  // (short) rows are affected; the base of each supplier cell reduces the
+  // shortfall and بونص fills the gap toward 0 without overshooting — same math as
+  // Flying tasfya (shortfall plays the role of the ordered quantity).
+  const supplierAdjusted = React.useCallback(
+    (code: string, base: number) => {
+      if (base >= 0 || supplierColumns.length === 0) return base;
+      const cells = supplierCells[code.trim()] ?? {};
+      return remainingOf(
+        { code, name: "", order: -base, cells },
+        supplierColumns,
+      );
+    },
+    [supplierColumns, supplierCells],
+  );
+
   const effTasfya = React.useCallback(
     (code: string, base: number) => {
       const raw = edits[code];
-      if (raw === undefined || raw === "") return base;
-      const n = Number(raw);
-      return Number.isFinite(n) ? n : base;
+      if (raw !== undefined && raw !== "") {
+        const n = Number(raw);
+        if (Number.isFinite(n)) return n;
+      }
+      return supplierAdjusted(code, base);
     },
-    [edits],
+    [edits, supplierAdjusted],
   );
 
   // All rows (ordered + extras), with the edited settlement applied to `tasfya`
@@ -489,7 +538,13 @@ export function RunClient() {
     let out =
       settle.size === 0
         ? filteredRows
-        : filteredRows.filter((r) => settle.has(settleCat(r.tasfya)));
+        : filteredRows.filter(
+            (r) =>
+              settle.has(settleCat(r.tasfya)) ||
+              // Keep short rows under the "لم يصل" filter while they're being
+              // settled from suppliers, even after they reach/pass 0.
+              (settle.has("neg") && r.baseTasfya < 0),
+          );
     if (flyingOnly) out = out.filter((r) => isCoveredOnFlying(r.code, r.tasfya));
     if (sort) {
       const col = colByKey[sort.col];
@@ -590,6 +645,37 @@ export function RunClient() {
     };
   }, [menu]);
 
+  const setSupCell = (code: string, colId: string, value: string) =>
+    setSupplierCells((prev) => ({
+      ...prev,
+      [code.trim()]: { ...(prev[code.trim()] ?? {}), [colId]: value },
+    }));
+
+  const addSupplierColumn = () =>
+    setSupplierColumns((prev) => [...prev, { id: newSupId(), name: "" }]);
+
+  const renameSupplierColumn = (id: string, name: string) =>
+    setSupplierColumns((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, name } : c)),
+    );
+
+  const removeSupplierColumn = (id: string) => {
+    setSupplierColumns((prev) => prev.filter((c) => c.id !== id));
+    setSupplierCells((prev) => {
+      const next: Record<string, Record<string, string>> = {};
+      for (const [code, cells] of Object.entries(prev)) {
+        if (!(id in cells)) {
+          next[code] = cells;
+          continue;
+        }
+        const cp = { ...cells };
+        delete cp[id];
+        next[code] = cp;
+      }
+      return next;
+    });
+  };
+
   const save = async () => {
     if (!result) return;
     setSaving(true);
@@ -605,6 +691,8 @@ export function RunClient() {
           report: result.report,
           extraItems: result.extraItems,
           edits,
+          supplierColumns,
+          supplierCells,
         }),
       });
       if (!res.ok) throw new Error();
@@ -716,6 +804,16 @@ export function RunClient() {
             >
               <Plane className="size-3.5" /> ع الطاير {flyingCount}
             </button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="ms-auto"
+              onClick={addSupplierColumn}
+              title="أضف عمود مورد لصفوف لم يصل — الكمية تُخصم من التسوية"
+            >
+              <Plus className="size-4" /> إضافة مورد
+            </Button>
           </div>
 
           {/* Search + count */}
@@ -813,6 +911,34 @@ export function RunClient() {
                       </th>
                     );
                   })}
+                  {supplierColumns.map((col) => (
+                    <th
+                      key={col.id}
+                      className="border-b border-s border-border bg-muted/60 p-0 text-center font-semibold text-muted-foreground"
+                    >
+                      <div className="flex items-center gap-0.5 px-1 py-1">
+                        <Truck className="size-3.5 shrink-0 text-sky-500" />
+                        <input
+                          value={col.name}
+                          dir="auto"
+                          placeholder="اسم المورد"
+                          onChange={(e) =>
+                            renameSupplierColumn(col.id, e.target.value)
+                          }
+                          className="h-7 w-24 min-w-[5rem] rounded-sm border border-transparent bg-transparent px-1 text-center text-xs font-semibold outline-none hover:border-border focus:border-ring focus:bg-background"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeSupplierColumn(col.id)}
+                          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground/50 hover:bg-destructive/10 hover:text-destructive"
+                          title="حذف عمود المورد"
+                          aria-label="حذف عمود المورد"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -872,14 +998,22 @@ export function RunClient() {
                     <td className="px-3 py-3 text-center align-middle">
                       <input
                         type="number"
-                        value={edits[row.code] ?? String(row.baseTasfya)}
+                        value={
+                          edits[row.code] ??
+                          String(supplierAdjusted(row.code, row.baseTasfya))
+                        }
                         onChange={(e) =>
                           setEdits((p) => ({ ...p, [row.code]: e.target.value }))
                         }
                         style={{
                           width: `calc(${Math.max(
                             4,
-                            (edits[row.code] ?? String(row.baseTasfya)).length,
+                            (
+                              edits[row.code] ??
+                              String(
+                                supplierAdjusted(row.code, row.baseTasfya),
+                              )
+                            ).length,
                           )}ch + 2.5rem)`,
                         }}
                         className={cn(
@@ -967,12 +1101,47 @@ export function RunClient() {
                         )}
                       </td>
                     )}
+                    {supplierColumns.map((col) => {
+                      const editable = row.baseTasfya < 0;
+                      const raw = supplierCells[row.code.trim()]?.[col.id] ?? "";
+                      const { base, bounce } = parseCell(raw);
+                      const bpct = bonusPercent(base + bounce, bounce);
+                      return (
+                        <td
+                          key={col.id}
+                          className="border-s border-border/60 p-0 align-middle"
+                        >
+                          {editable ? (
+                            <>
+                              <input
+                                value={raw}
+                                inputMode="text"
+                                onChange={(e) =>
+                                  setSupCell(row.code, col.id, e.target.value)
+                                }
+                                title="اكتب الكمية، أو كمية+بونص مثل 100+10"
+                                className="h-9 w-24 min-w-full border-0 bg-transparent px-2 text-center text-sm tabular-nums outline-none focus:bg-primary/5 focus:ring-2 focus:ring-inset focus:ring-ring"
+                              />
+                              {bounce > 0 && (
+                                <div className="-mt-1 pb-0.5 text-center text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                  +{bpct}% bounce
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className={ENTRY}>
+                              <span className="text-muted-foreground/30">—</span>
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
                 {visibleRows.length === 0 && (
                   <tr>
                     <td
-                      colSpan={columns.length}
+                      colSpan={columns.length + supplierColumns.length}
                       className="px-3 py-10 text-center text-muted-foreground"
                     >
                       No rows match the current filters.

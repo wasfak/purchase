@@ -49,6 +49,14 @@ const ExtraItemSchema = new Schema(
   { _id: false },
 );
 
+const SupplierColumnSchema = new Schema(
+  {
+    id: { type: String, required: true },
+    name: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
 const AutoTasfyaResultSchema = new Schema(
   {
     ownerId: { type: String, required: true, index: true },
@@ -61,6 +69,11 @@ const AutoTasfyaResultSchema = new Schema(
     extraItems: { type: [ExtraItemSchema], default: [] },
     // Per-item settlement overrides, keyed by item code (raw strings).
     edits: { type: Schema.Types.Mixed, default: {} },
+    // "لم يصل" supplier columns (renamable, like Flying tasfya's distributors).
+    supplierColumns: { type: [SupplierColumnSchema], default: [] },
+    // Per-code supplier cells: { [code]: { [colId]: "100" | "100+10" } }. The base
+    // deducts from a negative التسوية; بونص only fills the gap toward 0.
+    supplierCells: { type: Schema.Types.Mixed, default: {} },
   },
   { timestamps: true },
 );
