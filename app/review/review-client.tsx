@@ -91,10 +91,11 @@ const LATE_AFTER_DAYS = 4;
 // stale (a previous cycle), so it reads as "Not sent" here.
 const SENT_WINDOW_DAYS = 7;
 
-// If a code that was marked done/ignored reappears this soon after it was marked,
-// don't carry the old status over — surface it as a fresh, unmarked row. A quick
-// reappearance means it wasn't really settled (e.g. ordered on the 10th but still
-// showing up on the 15th), so it should be reviewed again rather than hidden.
+// If a code that was marked IGNORED reappears this soon after it was marked,
+// don't carry the ignored status over — surface it as a fresh, unmarked row so
+// it gets re-reviewed. This only applies to ignored codes: a DONE (ordered) code
+// always carries its status over no matter how soon it reappears, so an item you
+// already ordered can never quietly come back as un-ordered and get re-ordered.
 const REAPPEAR_WINDOW_DAYS = 5;
 
 // Present a stored "YYYY-MM-DD" date (as used by the Orders tab) in the local
@@ -553,18 +554,24 @@ export function ReviewClient() {
             const meta = history[normCode(r[codeKey])];
             if (!meta) return;
             const id = String(i);
-            // Reappeared within the window of when it was marked: don't carry the
-            // done/ignored status over — treat it as a fresh, unmarked row. The
-            // category (if any) still carries, since it's not a done/ignored state.
-            const reappearedSoon =
-              meta.status != null &&
-              meta.at != null &&
-              daysSince(meta.at, uploadedNow) <= REAPPEAR_WINDOW_DAYS;
-            if (!reappearedSoon) {
-              if (meta.status === "done") carriedDone.add(id);
-              else if (meta.status === "ignored") carriedIgnored.add(id);
-              if (meta.status && meta.at) carriedAt.set(id, meta.at);
+            if (meta.status === "done") {
+              // An ordered item ALWAYS stays marked done — no matter how soon it
+              // reappears — so it can never quietly come back as un-ordered and
+              // get re-ordered by mistake.
+              carriedDone.add(id);
+              if (meta.at) carriedAt.set(id, meta.at);
+            } else if (meta.status === "ignored") {
+              // An ignored code that reappears within the window is surfaced
+              // fresh for re-review (nothing was ordered, so nothing's at risk).
+              const reappearedSoon =
+                meta.at != null &&
+                daysSince(meta.at, uploadedNow) <= REAPPEAR_WINDOW_DAYS;
+              if (!reappearedSoon) {
+                carriedIgnored.add(id);
+                if (meta.at) carriedAt.set(id, meta.at);
+              }
             }
+            // Category (if any) always carries, since it's not a done/ignored state.
             if (meta.category) carriedCat.set(id, meta.category);
           });
         }
