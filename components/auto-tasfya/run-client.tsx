@@ -415,12 +415,13 @@ export function RunClient() {
   }, [result]);
 
   // A row is "ع الطاير": its settlement is negative (short) yet the same code is
-  // covered (الباقى = 0) on the flying sheet — matches the badge on the code.
+  // covered (الباقى >= 0) on the flying sheet — exactly covered (0) OR over-bought
+  // with a surplus (> 0). Either way there's no need to reorder it, so it counts.
   const isCoveredOnFlying = React.useCallback(
     (code: string, tasfya: number) => {
       if (!flying || tasfya >= 0) return false;
       const r = flying.byCode.get(code.trim());
-      return !!r && effRemaining(r, flying.columns) === 0;
+      return !!r && effRemaining(r, flying.columns) >= 0;
     },
     [flying],
   );
@@ -1406,8 +1407,9 @@ function FlyingCodeCell({
   const rem = row ? effRemaining(row, columns) : 0;
   const hasFlying = !!row;
   // Auto Tasfya says still short (negative), but Flying tasfya shows it covered
-  // (الباقى = 0) — flag it so it can be settled from الطاير.
-  const coveredOnFlying = tasfya < 0 && hasFlying && rem === 0;
+  // (الباقى >= 0: exactly covered or over-bought surplus) — flag it so it can be
+  // settled from الطاير with no reorder.
+  const coveredOnFlying = tasfya < 0 && hasFlying && rem >= 0;
 
   const copyCode = async () => {
     try {

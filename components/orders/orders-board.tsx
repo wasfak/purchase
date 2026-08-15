@@ -339,7 +339,8 @@ type OrderFilter =
   | "noNeed"
   | "important"
   | "dueSoon"
-  | "reviewDue";
+  | "reviewDue"
+  | "hideFinished";
 
 // The pickable filters, in display order, each with a label and its predicate.
 const FILTER_OPTIONS: {
@@ -353,6 +354,7 @@ const FILTER_OPTIONS: {
   { value: "important", label: "Important", test: isImportant },
   { value: "dueSoon", label: "Due soon", test: isDueSoon },
   { value: "reviewDue", label: "Review tasfya", test: isReviewDue },
+  { value: "hideFinished", label: "Hide finished", test: (o) => !isFinished(o) },
 ];
 
 // An order needs a "review tasfya" nudge when REVIEW_AFTER_DAYS have passed
