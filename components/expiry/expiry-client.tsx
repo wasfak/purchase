@@ -1,10 +1,14 @@
 "use client";
 
 import * as React from "react";
+import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import {
   AlarmClock,
   Calendar,
+  Check,
+  Clock,
+  FileSpreadsheet,
   Loader2,
   Minus,
   Save,
@@ -426,6 +430,12 @@ export function ExpiryClient() {
   } | null>(null);
   const [monthLoading, setMonthLoading] = React.useState<string | null>(null);
 
+  // Per-company review state for the working month (saveMonth), keyed by the
+  // normalized company name: whether it's been handled ("done" vs "pending")
+  // and a free-text note. Loaded from /api/expiry-review and saved per change.
+  type Review = { status: "pending" | "done"; note: string };
+  const [reviews, setReviews] = React.useState<Map<string, Review>>(new Map());
+
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   // Fixed "today" for the lifetime of the view so day counts stay stable.
@@ -652,6 +662,115 @@ export function ExpiryClient() {
     }
   };
 
+  // Load the saved review state (status + note) for the working month.
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/expiry-review?month=${saveMonth}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!active) return;
+        const m = new Map<string, Review>();
+        for (const r of data.reviews ?? []) {
+          m.set(String(r.key), {
+            status: r.status === "done" ? "done" : "pending",
+            note: String(r.note ?? ""),
+          });
+        }
+        setReviews(m);
+      } catch {
+        // No review data — companies just start as pending with no note.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [saveMonth]);
+
+  const reviewOf = React.useCallback(
+    (company: string): Review =>
+      reviews.get(normalizeCompany(company)) ?? { status: "pending", note: "" },
+    [reviews],
+  );
+
+  // Persist one company's review for the working month.
+  const saveReview = React.useCallback(
+    async (company: string, val: Review) => {
+      try {
+        const res = await fetch("/api/expiry-review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            month: saveMonth,
+            company,
+            status: val.status,
+            note: val.note,
+          }),
+        });
+        if (!res.ok) throw new Error();
+      } catch {
+        toast.error("Couldn't save the company's review");
+      }
+    },
+    [saveMonth],
+  );
+
+  // Update a company's review locally; when `persist` is true, also save it.
+  // (Note edits update locally on each keystroke and persist on blur.)
+  const updateReview = React.useCallback(
+    (company: string, patch: Partial<Review>, persist: boolean) => {
+      const key = normalizeCompany(company);
+      const cur = reviews.get(key) ?? { status: "pending", note: "" };
+      const next: Review = { ...cur, ...patch };
+      setReviews((prev) => new Map(prev).set(key, next));
+      if (persist) void saveReview(company, next);
+    },
+    [reviews, saveReview],
+  );
+
+  // Export the companies table (with status + note) and every item to Excel.
+  const exportExcel = React.useCallback(() => {
+    const companyRows = companies.map((c) => {
+      const r = reviewOf(c.company);
+      return {
+        Company: c.company,
+        Items: c.items,
+        Units: c.units,
+        "Soonest (days)": c.nearestDays ?? "",
+        "Cost value": c.costValue,
+        "Retail value": c.retailValue,
+        Expired: c.expired,
+        Status: r.status === "done" ? "Done" : "Pending",
+        Note: r.note,
+      };
+    });
+    const itemRows = activeRows.map((r) => ({
+      Company: r.supplier,
+      Code: r.code,
+      Product: r.product,
+      Expiry: r.expiry,
+      Qty: r.qty,
+      "Avg cost": r.avgCost,
+      "Buy price": r.buyPrice,
+      "Sell price": r.sellPrice,
+      Total: r.total,
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(companyRows),
+      "Companies",
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(itemRows),
+      "Items",
+    );
+    XLSX.writeFile(wb, `expiry-${saveMonth}.xlsx`);
+    toast.success(`Exported ${companies.length} companies to Excel`);
+  }, [companies, activeRows, reviewOf, saveMonth]);
+
   const hasData = rows.length > 0;
   const maxBucketValue = Math.max(...summary.buckets.map((b) => b.costValue), 1);
   const maxCompanyValue = Math.max(...companies.map((c) => c.costValue), 1);
@@ -815,6 +934,15 @@ export function ExpiryClient() {
                   {saving ? <Loader2 className="animate-spin" /> : <Save />}
                   Save to Orders
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={exportExcel}
+                  disabled={companies.length === 0}
+                  title="Download the companies (with status + note) and all items as an .xlsx file"
+                >
+                  <FileSpreadsheet /> Export Excel
+                </Button>
                 <Button variant="outline" size="sm" onClick={clearAll}>
                   <X /> Clear
                 </Button>
@@ -822,7 +950,11 @@ export function ExpiryClient() {
             </div>
             <p className="text-xs text-muted-foreground">
               Sorted by cost value at risk. Click a company for its items — with
-              filters — in a popup.{" "}
+              filters — in a popup. Mark each company{" "}
+              <b className="text-foreground">Done / Pending</b> and add a note as
+              you work through them (saved per month), or{" "}
+              <b className="text-foreground">Export Excel</b> to download the list
+              with all items.{" "}
               <b className="text-foreground">Save to Orders</b> files this
               snapshot under the chosen month (each month keeps one) so the Orders
               tab shows each company&apos;s expiry and the trend above tracks it
@@ -854,10 +986,19 @@ export function ExpiryClient() {
                     <th className="border-b border-border px-3 py-2 text-start font-semibold">
                       Share
                     </th>
+                    <th className="border-b border-border px-3 py-2 font-semibold">
+                      Status
+                    </th>
+                    <th className="border-b border-border px-3 py-2 text-start font-semibold">
+                      Note
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {companies.map((c) => (
+                  {companies.map((c) => {
+                    const review = reviewOf(c.company);
+                    const done = review.status === "done";
+                    return (
                     <tr
                       key={c.company}
                       onClick={() => setOpenCompany(c.company)}
@@ -903,12 +1044,58 @@ export function ExpiryClient() {
                           </span>
                         </div>
                       </td>
+                      <td
+                        className="px-3 py-2 text-center"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateReview(
+                              c.company,
+                              { status: done ? "pending" : "done" },
+                              true,
+                            )
+                          }
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+                            done
+                              ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-400"
+                              : "border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-400",
+                          )}
+                          title="Click to toggle done / pending"
+                        >
+                          {done ? (
+                            <Check className="size-3" />
+                          ) : (
+                            <Clock className="size-3" />
+                          )}
+                          {done ? "Done" : "Pending"}
+                        </button>
+                      </td>
+                      <td
+                        className="px-3 py-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          value={review.note}
+                          placeholder="Add a note…"
+                          onChange={(e) =>
+                            updateReview(c.company, { note: e.target.value }, false)
+                          }
+                          onBlur={() => saveReview(c.company, reviewOf(c.company))}
+                          dir="auto"
+                          className="h-8 w-44 rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                        />
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   {companies.length === 0 && (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={8}
                         className="px-3 py-10 text-center text-muted-foreground"
                       >
                         No items for your companies in these files.
