@@ -162,9 +162,12 @@ export function ReviewWorkspace({
   // When false, this workspace is fully standalone: it never reads the Orders
   // tab and drops the "Send date" column entirely.
   showOrders = true,
+  // When false, the "Status date" and "Late" columns are dropped from the table.
+  showStatusColumns = true,
 }: {
   store: ReviewStore;
   showOrders?: boolean;
+  showStatusColumns?: boolean;
 }) {
   const {
     clearCodeStatuses,
@@ -198,6 +201,11 @@ export function ReviewWorkspace({
   const [loading, setLoading] = React.useState(false);
   const [dragging, setDragging] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  // Whether the open sheet has changes (marks, edits, category, rename) not yet
+  // written to its saved copy. The named "Saved sheets" entry only updates on an
+  // explicit Save/Update, so this drives the "unsaved changes" hint that tells
+  // the user when a Save is pending. Cleared on save / open / upload / clear.
+  const [dirty, setDirty] = React.useState(false);
   const [hideIgnored, setHideIgnored] = React.useState(false);
   const [hideDone, setHideDone] = React.useState(false);
 
@@ -336,11 +344,11 @@ export function ReviewWorkspace({
       // Only surface the Orders column when the sheet actually has a supplier
       // column to match on — otherwise it'd be all dashes.
       ...(supplierCol ? [SEND_COL] : []),
-      MARKED_COL,
-      LATE_COL,
+      // The "Status date" + "Late" columns can be turned off per workspace.
+      ...(showStatusColumns ? [MARKED_COL, LATE_COL] : []),
       CATEGORY_COL,
     ],
-    [columns, supplierCol],
+    [columns, supplierCol, showStatusColumns],
   );
 
   // Re-read the clock hourly so a tab left open overnight starts flagging rows
@@ -639,7 +647,7 @@ export function ReviewWorkspace({
           });
           setCurrentId(newId);
           await refreshSaved();
-          toast.success("Sheet uploaded and auto-saved to this PC");
+          toast.success("Sheet uploaded and saved");
         } catch {
           // Auto-save failed (e.g. storage full) — the sheet is still usable and
           // the user can save manually; don't block the upload on it.
@@ -650,6 +658,8 @@ export function ReviewWorkspace({
       setFileName(file.name);
       setName(displayName);
       setSelected(new Set());
+      // Upload auto-saves (above), so a just-loaded sheet starts saved.
+      setDirty(false);
     } catch (e) {
       setError(
         e instanceof Error
@@ -676,6 +686,7 @@ export function ReviewWorkspace({
   // Inline cell edit: coerce numeric columns back to numbers, blanks to null.
   const editCell = (id: string, col: string, value: string) => {
     const i = Number(id);
+    setDirty(true);
     setRows((prev) =>
       prev.map((r, idx) => {
         if (idx !== i) return r;
@@ -705,7 +716,10 @@ export function ReviewWorkspace({
   const reconcileStatusAt = (
     nextCompleted: Set<string>,
     nextIgnored: Set<string>,
-  ) =>
+  ) => {
+    // Only ever called from a user mark action (toggle / bulk / by-codes), never
+    // on load — so this is a safe single place to flag the sheet as unsaved.
+    setDirty(true);
     setStatusAt((prev) => {
       const next = new Map(prev);
       const now = Date.now();
@@ -715,6 +729,7 @@ export function ReviewWorkspace({
         if (!nextCompleted.has(id) && !nextIgnored.has(id)) next.delete(id);
       return next;
     });
+  };
 
   const toggleComplete = (id: string) => {
     const next = new Set(completed);
@@ -732,13 +747,15 @@ export function ReviewWorkspace({
     reconcileStatusAt(completed, next);
   };
 
-  const setCategoryFor = (id: string, value: string) =>
+  const setCategoryFor = (id: string, value: string) => {
+    setDirty(true);
     setCategory((prev) => {
       const next = new Map(prev);
       if (value) next.set(id, value);
       else next.delete(id);
       return next;
     });
+  };
 
   const toggleSelectMany = (ids: string[], checked: boolean) =>
     setSelected((prev) => {
@@ -793,8 +810,9 @@ export function ReviewWorkspace({
         uploadedAt: uploadedAt ?? undefined,
       });
       setCurrentId(id);
+      setDirty(false);
       await refreshSaved();
-      toast.success("Saved to this PC");
+      toast.success("Saved");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't save");
     } finally {
@@ -1032,6 +1050,7 @@ export function ReviewWorkspace({
     setStatusAt(newStatusAt);
     setCategory(newCategory);
     setSelected(new Set());
+    setDirty(true);
     return removed;
   }, [rows, completed, ignored, statusAt, category]);
 
@@ -1048,6 +1067,7 @@ export function ReviewWorkspace({
     setIgnored(new Set());
     setStatusAt(new Map());
     setSelected(new Set());
+    setDirty(true);
     toast.success(`Un-marked ${count} row${count === 1 ? "" : "s"}.`);
   };
 
@@ -1149,6 +1169,8 @@ export function ReviewWorkspace({
       // Fall back to the saved-at time for older sheets with no upload stamp.
       setUploadedAt(ds.uploadedAt ?? ds.savedAt);
       setCarried(null);
+      // Freshly opened from its saved copy — nothing pending yet.
+      setDirty(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that sheet");
     } finally {
@@ -1181,6 +1203,7 @@ export function ReviewWorkspace({
     setCurrentId(null);
     setUploadedAt(null);
     setCarried(null);
+    setDirty(false);
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -1475,7 +1498,10 @@ export function ReviewWorkspace({
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
             <input
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setDirty(true);
+              }}
               placeholder="Name this sheet"
               className="h-9 min-w-48 flex-1 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
             />
@@ -1520,10 +1546,6 @@ export function ReviewWorkspace({
             )}
             <Button variant="outline" onClick={exportExcel}>
               <Download /> Export Excel
-            </Button>
-            <Button onClick={save} disabled={saving}>
-              {saving ? <Loader2 className="animate-spin" /> : <Save />}
-              {currentId ? "Update saved" : "Save to PC"}
             </Button>
           </div>
 
@@ -1681,6 +1703,38 @@ export function ReviewWorkspace({
               </Button>
             }
           />
+
+          {/* Dedicated save bar — pinned to the bottom of the viewport so the
+              primary Save action stays reachable while working down a long
+              sheet, and clearly shows when a save is pending. */}
+          <div className="sticky bottom-4 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card/95 px-4 py-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
+            <span className="flex items-center gap-2 text-sm">
+              {dirty ? (
+                <>
+                  <span className="size-2.5 shrink-0 rounded-full bg-amber-500" />
+                  <span className="font-medium">Unsaved changes</span>
+                  <span className="hidden text-muted-foreground sm:inline">
+                    — click Update to save it for everyone
+                  </span>
+                </>
+              ) : (
+                <>
+                  <CircleCheck className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span className="text-muted-foreground">
+                    {currentId ? "All changes saved" : "Not saved yet"}
+                  </span>
+                </>
+              )}
+            </span>
+            <Button
+              onClick={save}
+              disabled={saving || (!dirty && !!currentId)}
+              className="min-w-40"
+            >
+              {saving ? <Loader2 className="animate-spin" /> : <Save />}
+              {currentId ? "Update saved sheet" : "Save sheet"}
+            </Button>
+          </div>
         </>
       )}
     </div>
