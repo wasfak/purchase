@@ -6,10 +6,14 @@
 // instead of repeating the keys on each row. Row data for a dataset is stored
 // as a single blob record, so listing saved sheets stays cheap and loading one
 // reads a single record.
+//
+// The whole store is parameterized by database name via `makeReviewStore`, so a
+// second, fully independent review workspace (e.g. "Review Aya") can run on its
+// own IndexedDB database with zero data overlap. The default `purchase-review`
+// store is re-exported below so existing imports keep working unchanged.
 
 import type { Cell } from "@/lib/dataset";
 
-const DB_NAME = "purchase-review";
 const DB_VERSION = 2;
 const STORE_META = "datasets"; // lightweight metadata, one record per sheet
 const STORE_ROWS = "rowdata"; // { id, rows } — the heavy row blob, keyed by id
@@ -45,136 +49,6 @@ export type SavedDatasetMeta = {
 
 export type SavedDataset = SavedDatasetMeta & { rows: SavedRow[] };
 
-function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === "undefined") {
-      reject(new Error("Local storage isn't available in this browser."));
-      return;
-    }
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: "id" });
-      }
-      if (!db.objectStoreNames.contains(STORE_ROWS)) {
-        db.createObjectStore(STORE_ROWS, { keyPath: "id" });
-      }
-      if (!db.objectStoreNames.contains(STORE_SESSION)) {
-        db.createObjectStore(STORE_SESSION, { keyPath: "id" });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function txDone(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
-
-function reqResult<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-/** Insert or update a dataset (metadata + rows) and return its id. */
-export async function saveDataset(input: {
-  id?: string;
-  name: string;
-  fileName: string;
-  columns: string[];
-  numericColumns: string[];
-  rows: SavedRow[];
-  /** Original upload time; defaults to now when the sheet is first saved. */
-  uploadedAt?: number;
-}): Promise<string> {
-  const db = await openDB();
-  const id = input.id ?? crypto.randomUUID();
-  const now = Date.now();
-  const meta: SavedDatasetMeta = {
-    id,
-    name: input.name.trim() || input.fileName || "Untitled sheet",
-    fileName: input.fileName,
-    savedAt: now,
-    uploadedAt: input.uploadedAt ?? now,
-    columns: input.columns,
-    numericColumns: input.numericColumns,
-    rowCount: input.rows.length,
-    completedCount: input.rows.filter((r) => r.completed).length,
-    ignoredCount: input.rows.filter((r) => r.ignored).length,
-  };
-
-  const tx = db.transaction([STORE_META, STORE_ROWS], "readwrite");
-  tx.objectStore(STORE_META).put(meta);
-  tx.objectStore(STORE_ROWS).put({ id, rows: input.rows });
-  await txDone(tx);
-  db.close();
-  return id;
-}
-
-/** All saved sheets (metadata only), newest first. */
-export async function listDatasets(): Promise<SavedDatasetMeta[]> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_META, "readonly");
-  const all = await reqResult(
-    tx.objectStore(STORE_META).getAll() as IDBRequest<SavedDatasetMeta[]>,
-  );
-  db.close();
-  return all.sort((a, b) => b.savedAt - a.savedAt);
-}
-
-/** Load one saved sheet with its rows, or null if it's gone. */
-export async function loadDataset(id: string): Promise<SavedDataset | null> {
-  const db = await openDB();
-  const tx = db.transaction([STORE_META, STORE_ROWS], "readonly");
-  const meta = await reqResult(
-    tx.objectStore(STORE_META).get(id) as IDBRequest<SavedDatasetMeta | undefined>,
-  );
-  const blob = await reqResult(
-    tx.objectStore(STORE_ROWS).get(id) as IDBRequest<{ rows: SavedRow[] } | undefined>,
-  );
-  db.close();
-  if (!meta) return null;
-  return { ...meta, rows: blob?.rows ?? [] };
-}
-
-/** Load every saved sheet with its rows in a single transaction. Used by the
- * cross-sheet code search so we don't open the DB once per sheet. */
-export async function loadAllDatasets(): Promise<SavedDataset[]> {
-  const db = await openDB();
-  const tx = db.transaction([STORE_META, STORE_ROWS], "readonly");
-  const metas = await reqResult(
-    tx.objectStore(STORE_META).getAll() as IDBRequest<SavedDatasetMeta[]>,
-  );
-  const blobs = await reqResult(
-    tx.objectStore(STORE_ROWS).getAll() as IDBRequest<
-      { id: string; rows: SavedRow[] }[]
-    >,
-  );
-  db.close();
-  const rowsById = new Map(blobs.map((b) => [b.id, b.rows]));
-  return metas
-    .sort((a, b) => b.savedAt - a.savedAt)
-    .map((meta) => ({ ...meta, rows: rowsById.get(meta.id) ?? [] }));
-}
-
-/** Remove a saved sheet and its rows. */
-export async function deleteDataset(id: string): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction([STORE_META, STORE_ROWS], "readwrite");
-  tx.objectStore(STORE_META).delete(id);
-  tx.objectStore(STORE_ROWS).delete(id);
-  await txDone(tx);
-  db.close();
-}
-
 // The current working sheet, auto-persisted so a page reload (or a dev-server
 // refresh) picks up exactly where the user left off — no re-uploading.
 export type WorkingSession = {
@@ -192,36 +66,6 @@ export type WorkingSession = {
   /** Per-row-id category pick (pharma / sena / sherktha). */
   category?: [string, string][];
 };
-
-export async function saveSession(session: WorkingSession): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_SESSION, "readwrite");
-  tx.objectStore(STORE_SESSION).put({ id: SESSION_KEY, ...session });
-  await txDone(tx);
-  db.close();
-}
-
-export async function loadSession(): Promise<WorkingSession | null> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_SESSION, "readonly");
-  const rec = await reqResult(
-    tx.objectStore(STORE_SESSION).get(SESSION_KEY) as IDBRequest<
-      (WorkingSession & { id: string }) | undefined
-    >,
-  );
-  db.close();
-  if (!rec) return null;
-  const { id: _id, ...session } = rec;
-  return session;
-}
-
-export async function clearSession(): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_SESSION, "readwrite");
-  tx.objectStore(STORE_SESSION).delete(SESSION_KEY);
-  await txDone(tx);
-  db.close();
-}
 
 // A running history of each code across every sheet, so a newly uploaded sheet
 // can flag codes that were already ordered (done) or skipped (ignored) before,
@@ -249,56 +93,260 @@ const normalizeMeta = (v: StoredCode | undefined): CodeMeta =>
 
 const isEmptyMeta = (m: CodeMeta) => !m.status && !m.category;
 
-export async function getCodeStatuses(): Promise<Record<string, CodeMeta>> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_SESSION, "readonly");
-  const rec = await reqResult(
-    tx.objectStore(STORE_SESSION).get(CODES_KEY) as IDBRequest<
-      CodesRecord | undefined
-    >,
-  );
-  db.close();
-  const out: Record<string, CodeMeta> = {};
-  for (const [code, v] of Object.entries(rec?.map ?? {})) {
-    out[code] = normalizeMeta(v);
-  }
-  return out;
+function txDone(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
 }
 
-/** Wipe the entire cross-sheet code history — used to start a fresh baseline. */
-export async function clearCodeStatuses(): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_SESSION, "readwrite");
-  tx.objectStore(STORE_SESSION).delete(CODES_KEY);
-  await txDone(tx);
-  db.close();
+function reqResult<T>(req: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
+
+/** The set of storage functions, all bound to one IndexedDB database. */
+export type ReviewStore = ReturnType<typeof makeReviewStore>;
 
 /**
- * Merge per-code updates into the history. Each update is field-merged onto the
- * existing entry; passing `null`, or an entry that ends up with neither a status
- * nor a category, removes that code.
+ * Build a review store backed by the IndexedDB database `dbName`. Every store
+ * created this way is completely isolated from every other — separate saved
+ * sheets, working session, and cross-sheet code history — so two review
+ * workspaces never share or overwrite each other's data.
  */
-export async function mergeCodeStatuses(
-  updates: Record<string, CodeMeta | null>,
-): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(STORE_SESSION, "readwrite");
-  const store = tx.objectStore(STORE_SESSION);
-  const rec = await reqResult(
-    store.get(CODES_KEY) as IDBRequest<CodesRecord | undefined>,
-  );
-  const map = rec?.map ?? {};
-  for (const [code, update] of Object.entries(updates)) {
-    if (update === null) {
-      delete map[code];
-      continue;
-    }
-    const merged: CodeMeta = { ...normalizeMeta(map[code]), ...update };
-    if (isEmptyMeta(merged)) delete map[code];
-    else map[code] = merged;
+export function makeReviewStore(dbName: string) {
+  function openDB(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === "undefined") {
+        reject(new Error("Local storage isn't available in this browser."));
+        return;
+      }
+      const req = indexedDB.open(dbName, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_META)) {
+          db.createObjectStore(STORE_META, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(STORE_ROWS)) {
+          db.createObjectStore(STORE_ROWS, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(STORE_SESSION)) {
+          db.createObjectStore(STORE_SESSION, { keyPath: "id" });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
   }
-  store.put({ id: CODES_KEY, map });
-  await txDone(tx);
-  db.close();
+
+  /** Insert or update a dataset (metadata + rows) and return its id. */
+  async function saveDataset(input: {
+    id?: string;
+    name: string;
+    fileName: string;
+    columns: string[];
+    numericColumns: string[];
+    rows: SavedRow[];
+    /** Original upload time; defaults to now when the sheet is first saved. */
+    uploadedAt?: number;
+  }): Promise<string> {
+    const db = await openDB();
+    const id = input.id ?? crypto.randomUUID();
+    const now = Date.now();
+    const meta: SavedDatasetMeta = {
+      id,
+      name: input.name.trim() || input.fileName || "Untitled sheet",
+      fileName: input.fileName,
+      savedAt: now,
+      uploadedAt: input.uploadedAt ?? now,
+      columns: input.columns,
+      numericColumns: input.numericColumns,
+      rowCount: input.rows.length,
+      completedCount: input.rows.filter((r) => r.completed).length,
+      ignoredCount: input.rows.filter((r) => r.ignored).length,
+    };
+
+    const tx = db.transaction([STORE_META, STORE_ROWS], "readwrite");
+    tx.objectStore(STORE_META).put(meta);
+    tx.objectStore(STORE_ROWS).put({ id, rows: input.rows });
+    await txDone(tx);
+    db.close();
+    return id;
+  }
+
+  /** All saved sheets (metadata only), newest first. */
+  async function listDatasets(): Promise<SavedDatasetMeta[]> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_META, "readonly");
+    const all = await reqResult(
+      tx.objectStore(STORE_META).getAll() as IDBRequest<SavedDatasetMeta[]>,
+    );
+    db.close();
+    return all.sort((a, b) => b.savedAt - a.savedAt);
+  }
+
+  /** Load one saved sheet with its rows, or null if it's gone. */
+  async function loadDataset(id: string): Promise<SavedDataset | null> {
+    const db = await openDB();
+    const tx = db.transaction([STORE_META, STORE_ROWS], "readonly");
+    const meta = await reqResult(
+      tx.objectStore(STORE_META).get(id) as IDBRequest<SavedDatasetMeta | undefined>,
+    );
+    const blob = await reqResult(
+      tx.objectStore(STORE_ROWS).get(id) as IDBRequest<{ rows: SavedRow[] } | undefined>,
+    );
+    db.close();
+    if (!meta) return null;
+    return { ...meta, rows: blob?.rows ?? [] };
+  }
+
+  /** Load every saved sheet with its rows in a single transaction. Used by the
+   * cross-sheet code search so we don't open the DB once per sheet. */
+  async function loadAllDatasets(): Promise<SavedDataset[]> {
+    const db = await openDB();
+    const tx = db.transaction([STORE_META, STORE_ROWS], "readonly");
+    const metas = await reqResult(
+      tx.objectStore(STORE_META).getAll() as IDBRequest<SavedDatasetMeta[]>,
+    );
+    const blobs = await reqResult(
+      tx.objectStore(STORE_ROWS).getAll() as IDBRequest<
+        { id: string; rows: SavedRow[] }[]
+      >,
+    );
+    db.close();
+    const rowsById = new Map(blobs.map((b) => [b.id, b.rows]));
+    return metas
+      .sort((a, b) => b.savedAt - a.savedAt)
+      .map((meta) => ({ ...meta, rows: rowsById.get(meta.id) ?? [] }));
+  }
+
+  /** Remove a saved sheet and its rows. */
+  async function deleteDataset(id: string): Promise<void> {
+    const db = await openDB();
+    const tx = db.transaction([STORE_META, STORE_ROWS], "readwrite");
+    tx.objectStore(STORE_META).delete(id);
+    tx.objectStore(STORE_ROWS).delete(id);
+    await txDone(tx);
+    db.close();
+  }
+
+  async function saveSession(session: WorkingSession): Promise<void> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_SESSION, "readwrite");
+    tx.objectStore(STORE_SESSION).put({ id: SESSION_KEY, ...session });
+    await txDone(tx);
+    db.close();
+  }
+
+  async function loadSession(): Promise<WorkingSession | null> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_SESSION, "readonly");
+    const rec = await reqResult(
+      tx.objectStore(STORE_SESSION).get(SESSION_KEY) as IDBRequest<
+        (WorkingSession & { id: string }) | undefined
+      >,
+    );
+    db.close();
+    if (!rec) return null;
+    const { id: _id, ...session } = rec;
+    return session;
+  }
+
+  async function clearSession(): Promise<void> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_SESSION, "readwrite");
+    tx.objectStore(STORE_SESSION).delete(SESSION_KEY);
+    await txDone(tx);
+    db.close();
+  }
+
+  async function getCodeStatuses(): Promise<Record<string, CodeMeta>> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_SESSION, "readonly");
+    const rec = await reqResult(
+      tx.objectStore(STORE_SESSION).get(CODES_KEY) as IDBRequest<
+        CodesRecord | undefined
+      >,
+    );
+    db.close();
+    const out: Record<string, CodeMeta> = {};
+    for (const [code, v] of Object.entries(rec?.map ?? {})) {
+      out[code] = normalizeMeta(v);
+    }
+    return out;
+  }
+
+  /** Wipe the entire cross-sheet code history — used to start a fresh baseline. */
+  async function clearCodeStatuses(): Promise<void> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_SESSION, "readwrite");
+    tx.objectStore(STORE_SESSION).delete(CODES_KEY);
+    await txDone(tx);
+    db.close();
+  }
+
+  /**
+   * Merge per-code updates into the history. Each update is field-merged onto the
+   * existing entry; passing `null`, or an entry that ends up with neither a status
+   * nor a category, removes that code.
+   */
+  async function mergeCodeStatuses(
+    updates: Record<string, CodeMeta | null>,
+  ): Promise<void> {
+    const db = await openDB();
+    const tx = db.transaction(STORE_SESSION, "readwrite");
+    const store = tx.objectStore(STORE_SESSION);
+    const rec = await reqResult(
+      store.get(CODES_KEY) as IDBRequest<CodesRecord | undefined>,
+    );
+    const map = rec?.map ?? {};
+    for (const [code, update] of Object.entries(updates)) {
+      if (update === null) {
+        delete map[code];
+        continue;
+      }
+      const merged: CodeMeta = { ...normalizeMeta(map[code]), ...update };
+      if (isEmptyMeta(merged)) delete map[code];
+      else map[code] = merged;
+    }
+    store.put({ id: CODES_KEY, map });
+    await txDone(tx);
+    db.close();
+  }
+
+  return {
+    saveDataset,
+    listDatasets,
+    loadDataset,
+    loadAllDatasets,
+    deleteDataset,
+    saveSession,
+    loadSession,
+    clearSession,
+    getCodeStatuses,
+    clearCodeStatuses,
+    mergeCodeStatuses,
+  };
 }
+
+// The default review workspace store (the original "Review" tab). Re-exported as
+// standalone functions so existing imports (`import { saveDataset } from
+// "@/lib/local-store"`) keep working exactly as before.
+export const defaultReviewStore = makeReviewStore("purchase-review");
+
+export const {
+  saveDataset,
+  listDatasets,
+  loadDataset,
+  loadAllDatasets,
+  deleteDataset,
+  saveSession,
+  loadSession,
+  clearSession,
+  getCodeStatuses,
+  clearCodeStatuses,
+  mergeCodeStatuses,
+} = defaultReviewStore;
