@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote } from "lucide-react";
+import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -296,6 +296,12 @@ function isDone(order: Order): boolean {
   return (order.dateOfDoing ?? "").trim() !== "";
 }
 
+// An order is fully finished once its "Finished" date is filled — this turns the
+// whole row's text green so completed orders stand out at a glance.
+function isFinished(order: Order): boolean {
+  return (order.finished ?? "").trim() !== "";
+}
+
 // An order counts as fully sent once BOTH its date of doing and send date are
 // filled — the "Sent" filter narrows the table down to these.
 function isSent(order: Order): boolean {
@@ -325,15 +331,29 @@ function isImportant(order: Order): boolean {
   return (order.important ?? "").trim().toLowerCase() === "yes";
 }
 
-// The row filter applied on top of the selected month.
+// The row filters applied on top of the selected month. Multiple can be active
+// at once — a row must satisfy every selected filter (AND) to be shown.
 type OrderFilter =
-  | "all"
   | "notStarted"
   | "sent"
   | "noNeed"
   | "important"
   | "dueSoon"
   | "reviewDue";
+
+// The pickable filters, in display order, each with a label and its predicate.
+const FILTER_OPTIONS: {
+  value: OrderFilter;
+  label: string;
+  test: (o: Order) => boolean;
+}[] = [
+  { value: "notStarted", label: "Not started yet", test: isNotStarted },
+  { value: "sent", label: "Sent", test: isSent },
+  { value: "noNeed", label: "No need", test: isNoNeed },
+  { value: "important", label: "Important", test: isImportant },
+  { value: "dueSoon", label: "Due soon", test: isDueSoon },
+  { value: "reviewDue", label: "Review tasfya", test: isReviewDue },
+];
 
 // An order needs a "review tasfya" nudge when REVIEW_AFTER_DAYS have passed
 // since it was sent and it isn't finished yet.
@@ -417,9 +437,12 @@ export function OrdersBoard() {
   const [submitting, setSubmitting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [busyIds, setBusyIds] = React.useState<Set<string>>(new Set());
-  // Narrows the table: all rows, only not-yet-started ones, or only fully-sent
-  // ones.
-  const [filter, setFilter] = React.useState<OrderFilter>("all");
+  // Narrows the table. Empty set = show all; otherwise a row must pass every
+  // selected filter. Lets you combine e.g. "Important" + "Due soon".
+  const [filters, setFilters] = React.useState<Set<OrderFilter>>(new Set());
+  // Whether the "Show" multi-select dropdown is open.
+  const [filterMenuOpen, setFilterMenuOpen] = React.useState(false);
+  const filterMenuRef = React.useRef<HTMLDivElement>(null);
   // Free-text search over company names, applied on top of the filter.
   const [search, setSearch] = React.useState("");
   // The single cell currently being edited inline.
@@ -510,12 +533,11 @@ export function OrdersBoard() {
   // (dedup, carry-over) still sees every row.
   const displayedOrders = React.useMemo(() => {
     let rows = visibleOrders;
-    if (filter === "sent") rows = rows.filter(isSent);
-    else if (filter === "notStarted") rows = rows.filter(isNotStarted);
-    else if (filter === "noNeed") rows = rows.filter(isNoNeed);
-    else if (filter === "important") rows = rows.filter(isImportant);
-    else if (filter === "dueSoon") rows = rows.filter(isDueSoon);
-    else if (filter === "reviewDue") rows = rows.filter(isReviewDue);
+    // Apply every selected filter — a row must pass all of them (AND).
+    const active = FILTER_OPTIONS.filter((f) => filters.has(f.value));
+    if (active.length > 0) {
+      rows = rows.filter((o) => active.every((f) => f.test(o)));
+    }
     const q = search.trim().toLowerCase();
     if (q) {
       rows = rows.filter((o) =>
@@ -523,7 +545,7 @@ export function OrdersBoard() {
       );
     }
     return rows;
-  }, [visibleOrders, filter, search]);
+  }, [visibleOrders, filters, search]);
 
   // The newest month (other than the one selected) that actually has orders —
   // the source we offer to carry companies over from into a fresh month.
@@ -544,6 +566,30 @@ export function OrdersBoard() {
     () => orders.filter((o) => !(o.month ?? "").trim()),
     [orders],
   );
+
+  // Toggle one filter in the "Show" multi-select.
+  const toggleFilter = (value: OrderFilter) =>
+    setFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+
+  // Close the "Show" dropdown when clicking outside it.
+  React.useEffect(() => {
+    if (!filterMenuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (
+        filterMenuRef.current &&
+        !filterMenuRef.current.contains(e.target as Node)
+      ) {
+        setFilterMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [filterMenuOpen]);
 
   const setBusy = (id: string, on: boolean) =>
     setBusyIds((prev) => {
@@ -1013,19 +1059,10 @@ export function OrdersBoard() {
       </label>
       <span className="px-1 text-sm text-muted-foreground">
         {displayedOrders.length} order{displayedOrders.length === 1 ? "" : "s"}
-        {filter === "sent"
-          ? " sent"
-          : filter === "notStarted"
-            ? " not started"
-            : filter === "noNeed"
-              ? " with no need"
-              : filter === "important"
-                ? " important"
-                : filter === "dueSoon"
-                  ? " due soon"
-                  : filter === "reviewDue"
-                    ? " to review"
-                    : ""}{" "}
+        {filters.size > 0 &&
+          ` · ${FILTER_OPTIONS.filter((f) => filters.has(f.value))
+            .map((f) => f.label)
+            .join(" + ")}`}{" "}
         in {monthLabel(month)}
       </span>
       <label className="relative flex items-center">
@@ -1038,22 +1075,62 @@ export function OrdersBoard() {
           className="h-9 w-44 rounded-lg border border-border bg-background pl-8 pr-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
         />
       </label>
-      <label className="flex items-center gap-2 text-sm font-medium">
+      <div
+        ref={filterMenuRef}
+        className="relative flex items-center gap-2 text-sm font-medium"
+      >
         Show
-        <select
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as OrderFilter)}
-          className="h-9 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+        <button
+          type="button"
+          onClick={() => setFilterMenuOpen((o) => !o)}
+          className="flex h-9 min-w-[10rem] items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+          aria-haspopup="listbox"
+          aria-expanded={filterMenuOpen}
         >
-          <option value="all">All orders</option>
-          <option value="notStarted">Not started yet</option>
-          <option value="sent">Sent</option>
-          <option value="noNeed">No need</option>
-          <option value="important">Important</option>
-          <option value="dueSoon">Due soon</option>
-          <option value="reviewDue">Review tasfya</option>
-        </select>
-      </label>
+          <span className="truncate">
+            {filters.size === 0
+              ? "All orders"
+              : `${filters.size} filter${filters.size === 1 ? "" : "s"}`}
+          </span>
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+        </button>
+        {filterMenuOpen && (
+          <div className="absolute left-10 top-full z-20 mt-1 w-56 rounded-lg border border-border bg-popover p-1 shadow-md">
+            {FILTER_OPTIONS.map((opt) => {
+              const checked = filters.has(opt.value);
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => toggleFilter(opt.value)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-normal transition-colors hover:bg-muted"
+                >
+                  <span
+                    className={cn(
+                      "grid size-4 shrink-0 place-items-center rounded border",
+                      checked
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border",
+                    )}
+                  >
+                    {checked && <Check className="size-3" />}
+                  </span>
+                  {opt.label}
+                </button>
+              );
+            })}
+            {filters.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilters(new Set())}
+                className="mt-1 flex w-full items-center gap-2 rounded-md border-t border-border px-2 py-1.5 text-left text-sm font-normal text-muted-foreground transition-colors hover:bg-muted"
+              >
+                <X className="size-3.5" /> Clear filters
+              </button>
+            )}
+          </div>
+        )}
+      </div>
       {unassignedOrders.length > 0 && (
         <Button
           type="button"
@@ -1230,19 +1307,13 @@ export function OrdersBoard() {
               <p className="text-sm text-muted-foreground">
                 {search.trim()
                   ? `No companies matching "${search.trim()}" in ${monthLabel(month)}.`
-                  : filter === "sent"
-                  ? `No fully-sent orders in ${monthLabel(month)} yet.`
-                  : filter === "noNeed"
-                    ? `No orders marked "no need" in ${monthLabel(month)}.`
-                    : filter === "important"
-                      ? `No important orders in ${monthLabel(month)}.`
-                      : filter === "dueSoon"
-                      ? `No orders due soon in ${monthLabel(month)}.`
-                      : filter === "reviewDue"
-                      ? `No orders to review in ${monthLabel(month)}.`
-                      : filter === "notStarted"
-                        ? `No not-started orders in ${monthLabel(month)} — all done.`
-                        : `No orders to show in ${monthLabel(month)}.`}
+                  : filters.size > 0
+                    ? `No orders matching ${FILTER_OPTIONS.filter((f) =>
+                        filters.has(f.value),
+                      )
+                        .map((f) => f.label)
+                        .join(" + ")} in ${monthLabel(month)}.`
+                    : `No orders to show in ${monthLabel(month)}.`}
               </p>
             </div>
           ) : (
@@ -1279,6 +1350,7 @@ export function OrdersBoard() {
                   const overdue = isOverdue(order, effectiveMonth(order));
                   const dueSoon = isDueSoon(order);
                   const done = isDone(order);
+                  const finished = isFinished(order);
                   const noNeed = isNoNeed(order);
                   return (
                     <tr
@@ -1290,6 +1362,10 @@ export function OrdersBoard() {
                         dueSoon && "bg-amber-500/15 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:hover:bg-amber-400/15",
                         overdue && "bg-destructive/10",
                         noNeed && "bg-muted/40 text-muted-foreground",
+                        // A finished order (its "Finished" date is filled) shows
+                        // its whole row text in green.
+                        finished &&
+                          "text-emerald-700 [&_*]:text-emerald-700 dark:text-emerald-400 dark:[&_*]:text-emerald-400",
                         busy && "opacity-60",
                       )}
                     >
