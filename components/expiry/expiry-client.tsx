@@ -435,6 +435,8 @@ export function ExpiryClient() {
   // and a free-text note. Loaded from /api/expiry-review and saved per change.
   type Review = { status: "pending" | "done"; note: string };
   const [reviews, setReviews] = React.useState<Map<string, Review>>(new Map());
+  // When on, companies marked "done" are hidden from the table below.
+  const [hideDone, setHideDone] = React.useState(false);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -694,6 +696,20 @@ export function ExpiryClient() {
     [reviews],
   );
 
+  // The companies actually rendered — all of them, or only the not-yet-done
+  // ones when "Hide done" is on.
+  const displayedCompanies = React.useMemo(
+    () =>
+      hideDone
+        ? companies.filter((c) => reviewOf(c.company).status !== "done")
+        : companies,
+    [companies, hideDone, reviewOf],
+  );
+  const doneCount = React.useMemo(
+    () => companies.filter((c) => reviewOf(c.company).status === "done").length,
+    [companies, reviewOf],
+  );
+
   // Persist one company's review for the working month.
   const saveReview = React.useCallback(
     async (company: string, val: Review) => {
@@ -911,9 +927,26 @@ export function ExpiryClient() {
           <div className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-semibold">
-                Companies ({companies.length})
+                Companies ({displayedCompanies.length}
+                {hideDone && doneCount > 0 && (
+                  <span className="font-normal text-muted-foreground">
+                    {" "}
+                    · {doneCount} done hidden
+                  </span>
+                )}
+                )
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  variant={hideDone ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setHideDone((v) => !v)}
+                  disabled={doneCount === 0}
+                  title="Hide companies you've marked done"
+                >
+                  {hideDone ? <Check /> : <Clock />}
+                  Hide done
+                </Button>
                 <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <Calendar className="size-4" />
                   <input
@@ -995,7 +1028,7 @@ export function ExpiryClient() {
                   </tr>
                 </thead>
                 <tbody>
-                  {companies.map((c) => {
+                  {displayedCompanies.map((c) => {
                     const review = reviewOf(c.company);
                     const done = review.status === "done";
                     return (
@@ -1092,13 +1125,15 @@ export function ExpiryClient() {
                     </tr>
                     );
                   })}
-                  {companies.length === 0 && (
+                  {displayedCompanies.length === 0 && (
                     <tr>
                       <td
                         colSpan={8}
                         className="px-3 py-10 text-center text-muted-foreground"
                       >
-                        No items for your companies in these files.
+                        {companies.length > 0 && hideDone
+                          ? "All companies are marked done."
+                          : "No items for your companies in these files."}
                       </td>
                     </tr>
                   )}
