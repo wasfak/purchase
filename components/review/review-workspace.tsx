@@ -1619,6 +1619,37 @@ export function ReviewWorkspace({
             </div>
           )}
 
+          {/* Dedicated save bar — sits right above the table, and clearly shows
+              when a save is pending so it's obvious when to click Update. */}
+          <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card/95 px-4 py-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
+            <span className="flex items-center gap-2 text-sm">
+              {dirty ? (
+                <>
+                  <span className="size-2.5 shrink-0 rounded-full bg-amber-500" />
+                  <span className="font-medium">Unsaved changes</span>
+                  <span className="hidden text-muted-foreground sm:inline">
+                    — click Update to save it for everyone
+                  </span>
+                </>
+              ) : (
+                <>
+                  <CircleCheck className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span className="text-muted-foreground">
+                    {currentId ? "All changes saved" : "Not saved yet"}
+                  </span>
+                </>
+              )}
+            </span>
+            <Button
+              onClick={save}
+              disabled={saving || (!dirty && !!currentId)}
+              className="min-w-40"
+            >
+              {saving ? <Loader2 className="animate-spin" /> : <Save />}
+              {currentId ? "Update saved sheet" : "Save sheet"}
+            </Button>
+          </div>
+
           <DataTable
             // Remount when the column set changes so filters/sort from a
             // previous sheet can't carry over and hide rows.
@@ -1703,38 +1734,6 @@ export function ReviewWorkspace({
               </Button>
             }
           />
-
-          {/* Dedicated save bar — pinned to the bottom of the viewport so the
-              primary Save action stays reachable while working down a long
-              sheet, and clearly shows when a save is pending. */}
-          <div className="sticky bottom-4 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card/95 px-4 py-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
-            <span className="flex items-center gap-2 text-sm">
-              {dirty ? (
-                <>
-                  <span className="size-2.5 shrink-0 rounded-full bg-amber-500" />
-                  <span className="font-medium">Unsaved changes</span>
-                  <span className="hidden text-muted-foreground sm:inline">
-                    — click Update to save it for everyone
-                  </span>
-                </>
-              ) : (
-                <>
-                  <CircleCheck className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                  <span className="text-muted-foreground">
-                    {currentId ? "All changes saved" : "Not saved yet"}
-                  </span>
-                </>
-              )}
-            </span>
-            <Button
-              onClick={save}
-              disabled={saving || (!dirty && !!currentId)}
-              className="min-w-40"
-            >
-              {saving ? <Loader2 className="animate-spin" /> : <Save />}
-              {currentId ? "Update saved sheet" : "Save sheet"}
-            </Button>
-          </div>
         </>
       )}
     </div>
