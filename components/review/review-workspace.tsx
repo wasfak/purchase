@@ -531,10 +531,19 @@ export function ReviewWorkspace({
             ? "ignored"
             : undefined;
         const cat = category.get(id) || undefined;
-        updates[code] =
-          !status && !cat
-            ? null
-            : { status, at: status ? statusAt.get(id) : undefined, category: cat };
+        // Only ADD or UPGRADE history from the current sheet — never let an
+        // unmarked / uncategorized row clobber what a previous sheet recorded.
+        // (Clearing a status is done explicitly via unmarkAll / unmarkByCodes.)
+        // Without this, a code that reappears un-marked but categorized — e.g. a
+        // recently-ignored item deliberately surfaced fresh on upload — would
+        // overwrite its stored "done"/"ignored" with undefined and lose it.
+        const update: CodeMeta = {};
+        if (status) {
+          update.status = status;
+          update.at = statusAt.get(id);
+        }
+        if (cat) update.category = cat;
+        if (update.status || update.category) updates[code] = update;
       });
       void mergeCodeStatuses(updates).catch(() => {});
     }, 500);
@@ -1065,6 +1074,20 @@ export function ReviewWorkspace({
       return;
     }
     const count = completed.size + ignored.size;
+    // Clear the status in the cross-sheet history too, for every marked code in
+    // this sheet — the auto-save no longer propagates a status clear (it only
+    // adds/upgrades), so an intentional unmark has to reach history directly.
+    // Category is kept.
+    if (codeCol) {
+      const updates: Record<string, CodeMeta> = {};
+      rows.forEach((r, i) => {
+        const id = String(i);
+        if (!completed.has(id) && !ignored.has(id)) return;
+        const code = normCode(r[codeCol]);
+        if (code) updates[code] = { status: undefined, at: undefined };
+      });
+      void mergeCodeStatuses(updates).catch(() => {});
+    }
     setCompleted(new Set());
     setIgnored(new Set());
     setStatusAt(new Map());
