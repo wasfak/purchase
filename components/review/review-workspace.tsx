@@ -57,7 +57,7 @@ type CodeSearchHit = {
 const MARKED_COL = "Status date"; // when the row was marked done/ignored
 const LATE_COL = "Late"; // ordered this long ago but still showing up
 const CATEGORY_COL = "Category"; // pharma / sena / sherktha
-const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha"] as const;
+const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha", "no need"] as const;
 
 // Column pulled from the Orders tab by matching this row's supplier (الموردين)
 // to a company there — so you can tell, per row, whether that company's order
@@ -208,6 +208,7 @@ export function ReviewWorkspace({
   const [dirty, setDirty] = React.useState(false);
   const [hideIgnored, setHideIgnored] = React.useState(false);
   const [hideDone, setHideDone] = React.useState(false);
+  const [hideNoNeed, setHideNoNeed] = React.useState(false);
 
   // When on (default), a new upload carries over done/ignored/category by code
   // from previous sheets, and the current sheet feeds that shared history. When
@@ -297,9 +298,10 @@ export function ReviewWorkspace({
       dataRows.filter(
         (r) =>
           (!hideIgnored || !ignored.has(r.__id)) &&
-          (!hideDone || !completed.has(r.__id)),
+          (!hideDone || !completed.has(r.__id)) &&
+          (!hideNoNeed || category.get(r.__id) !== "no need"),
       ),
-    [dataRows, hideIgnored, hideDone, ignored, completed],
+    [dataRows, hideIgnored, hideDone, hideNoNeed, ignored, completed, category],
   );
 
   // The actual header key that names the supplier/company for each row, so we
@@ -1529,6 +1531,15 @@ export function ReviewWorkspace({
               >
                 <EyeOff />
                 {hideDone ? "Show done" : "Hide done"}
+              </Button>
+            )}
+            {[...category.values()].includes("no need") && (
+              <Button
+                variant={hideNoNeed ? "default" : "outline"}
+                onClick={() => setHideNoNeed((v) => !v)}
+              >
+                <EyeOff />
+                {hideNoNeed ? 'Show "no need"' : 'Hide "no need"'}
               </Button>
             )}
             {(completedCount > 0 || ignored.size > 0) && (
