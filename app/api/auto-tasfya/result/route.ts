@@ -57,6 +57,9 @@ export async function POST(request: Request) {
     extraItems: Array.isArray(body.extraItems) ? body.extraItems : [],
     edits:
       body.edits && typeof body.edits === "object" ? body.edits : {},
+    hiddenCodes: Array.isArray(body.hiddenCodes)
+      ? body.hiddenCodes.map((c: unknown) => String(c ?? "").trim()).filter(Boolean)
+      : [],
     supplierColumns: Array.isArray(body.supplierColumns)
       ? body.supplierColumns
       : [],

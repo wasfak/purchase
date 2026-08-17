@@ -13,6 +13,8 @@ import {
   CircleDot,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   Filter,
   Loader2,
   PackageCheck,
@@ -219,6 +221,10 @@ export function RunClient() {
   );
 
   const [edits, setEdits] = React.useState<Record<string, string>>({});
+  // Codes the user manually hid from the view (and therefore from the export).
+  const [hiddenCodes, setHiddenCodes] = React.useState<Set<string>>(new Set());
+  // When on, the table shows ONLY the hidden rows so they can be un-hidden.
+  const [showHidden, setShowHidden] = React.useState(false);
   // "لم يصل" supplier columns + per-code cells (Flying-tasfya style). The base of
   // each cell deducts from a negative التسوية; بونص only helps reach 0.
   const [supplierColumns, setSupplierColumns] = React.useState<FlyingColumn[]>(
@@ -278,6 +284,7 @@ export function RunClient() {
         );
 
         let savedEdits: Record<string, string> = {};
+        let savedHidden: string[] = [];
         let savedSupCols: FlyingColumn[] = [];
         let savedSupCells: Record<string, Record<string, string>> = {};
         try {
@@ -288,6 +295,10 @@ export function RunClient() {
             const j = await r.json();
             if (j.result?.edits && typeof j.result.edits === "object")
               savedEdits = j.result.edits as Record<string, string>;
+            if (Array.isArray(j.result?.hiddenCodes))
+              savedHidden = (j.result.hiddenCodes as unknown[])
+                .map((c) => String(c ?? "").trim())
+                .filter(Boolean);
             if (Array.isArray(j.result?.supplierColumns))
               savedSupCols = j.result.supplierColumns.map(
                 (c: FlyingColumn) => ({ id: c.id, name: c.name ?? "" }),
@@ -315,6 +326,7 @@ export function RunClient() {
           referenceDate: data.referenceDate,
         });
         setEdits(savedEdits);
+        setHiddenCodes(new Set(savedHidden));
         setSupplierColumns(savedSupCols);
         setSupplierCells(savedSupCells);
         if (!data.hasPos)
@@ -536,28 +548,47 @@ export function RunClient() {
     });
   }, [allRows, search, filters, columns, colByKey]);
 
+  // How many rows (after search/column filters) are currently hidden.
+  const hiddenCount = React.useMemo(
+    () => filteredRows.filter((r) => hiddenCodes.has(r.code.trim())).length,
+    [filteredRows, hiddenCodes],
+  );
+
+  // Rows in scope: normally everything except hidden codes; while showHidden is
+  // on, ONLY the hidden codes (so they can be reviewed/un-hidden). Counts, the
+  // table, and the Excel export all flow from here — hidden rows never export.
+  const scopedRows = React.useMemo(
+    () =>
+      filteredRows.filter((r) =>
+        showHidden
+          ? hiddenCodes.has(r.code.trim())
+          : !hiddenCodes.has(r.code.trim()),
+      ),
+    [filteredRows, hiddenCodes, showHidden],
+  );
+
   const settleCounts = React.useMemo(() => {
     const c = { zero: 0, pos: 0, neg: 0 };
-    for (const r of filteredRows) c[settleCat(r.tasfya)]++;
+    for (const r of scopedRows) c[settleCat(r.tasfya)]++;
     return c;
-  }, [filteredRows]);
+  }, [scopedRows]);
 
   const flyingCount = React.useMemo(
     () =>
-      filteredRows.filter((r) => isCoveredOnFlying(r.code, r.tasfya)).length,
-    [filteredRows, isCoveredOnFlying],
+      scopedRows.filter((r) => isCoveredOnFlying(r.code, r.tasfya)).length,
+    [scopedRows, isCoveredOnFlying],
   );
 
   const unmarkedCount = React.useMemo(
-    () => filteredRows.filter((r) => isUnmarkedShort(r.tasfya, r.name)).length,
-    [filteredRows],
+    () => scopedRows.filter((r) => isUnmarkedShort(r.tasfya, r.name)).length,
+    [scopedRows],
   );
 
   const visibleRows = React.useMemo(() => {
     let out =
       settle.size === 0
-        ? filteredRows
-        : filteredRows.filter((r) => settle.has(settleCat(r.tasfya)));
+        ? scopedRows
+        : scopedRows.filter((r) => settle.has(settleCat(r.tasfya)));
     if (flyingOnly) out = out.filter((r) => isCoveredOnFlying(r.code, r.tasfya));
     if (unmarkedOnly)
       out = out.filter((r) => isUnmarkedShort(r.tasfya, r.name));
@@ -575,7 +606,7 @@ export function RunClient() {
     }
     return out;
   }, [
-    filteredRows,
+    scopedRows,
     settle,
     flyingOnly,
     unmarkedOnly,
@@ -628,7 +659,17 @@ export function RunClient() {
     setSettle(new Set());
     setFlyingOnly(false);
     setUnmarkedOnly(false);
+    setShowHidden(false);
   };
+
+  const toggleHidden = (code: string) =>
+    setHiddenCodes((prev) => {
+      const n = new Set(prev);
+      const key = code.trim();
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return n;
+    });
 
   const fmt = (col: ColKey, v: string) =>
     v === ""
@@ -739,6 +780,7 @@ export function RunClient() {
           report: result.report,
           extraItems: result.extraItems,
           edits,
+          hiddenCodes: Array.from(hiddenCodes),
           supplierColumns,
           supplierCells,
         }),
@@ -760,7 +802,8 @@ export function RunClient() {
     (search.trim() ? 1 : 0) +
     settle.size +
     (flyingOnly ? 1 : 0) +
-    (unmarkedOnly ? 1 : 0);
+    (unmarkedOnly ? 1 : 0) +
+    (showHidden ? 1 : 0);
 
   return (
     <main dir="ltr" className="mx-auto w-full max-w-[120rem] space-y-4 p-6">
@@ -867,6 +910,21 @@ export function RunClient() {
               )}
             >
               بدون علامة {unmarkedCount}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowHidden((v) => !v)}
+              aria-pressed={showHidden}
+              title="عرض الأكواد المخفية لإظهارها من جديد"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-shadow",
+                "bg-neutral-500/15 text-neutral-700 dark:text-neutral-300 ring-neutral-500",
+                showHidden
+                  ? "ring-2 ring-offset-1 ring-offset-background"
+                  : "opacity-90 hover:opacity-100",
+              )}
+            >
+              <EyeOff className="size-3.5" /> مخفي {hiddenCount}
             </button>
             <Button
               type="button"
@@ -1031,23 +1089,46 @@ export function RunClient() {
                         accentClass(row.tasfya),
                       )}
                     >
-                      <FlyingCodeCell
-                        code={row.code}
-                        tasfya={row.tasfya}
-                        flying={flying}
-                        zeroLoading={row.tasfya > 0 && zeroCodes === null}
-                        zeroHits={
-                          row.tasfya > 0
-                            ? (zeroCodes?.get(row.code.trim()) ?? []).filter(
-                                (h) => {
-                                  const order = dateKey(result.referenceDate);
-                                  const file = dateKey(h.date);
-                                  return order && file && file >= order;
-                                },
-                              )
-                            : []
-                        }
-                      />
+                      <div className="flex items-center justify-center gap-1">
+                        <FlyingCodeCell
+                          code={row.code}
+                          tasfya={row.tasfya}
+                          flying={flying}
+                          zeroLoading={row.tasfya > 0 && zeroCodes === null}
+                          zeroHits={
+                            row.tasfya > 0
+                              ? (zeroCodes?.get(row.code.trim()) ?? []).filter(
+                                  (h) => {
+                                    const order = dateKey(result.referenceDate);
+                                    const file = dateKey(h.date);
+                                    return order && file && file >= order;
+                                  },
+                                )
+                              : []
+                          }
+                        />
+                        <button
+                          type="button"
+                          onClick={() => toggleHidden(row.code)}
+                          title={
+                            hiddenCodes.has(row.code.trim())
+                              ? "إظهار هذا الكود"
+                              : "إخفاء هذا الكود من العرض والتصدير"
+                          }
+                          aria-label={
+                            hiddenCodes.has(row.code.trim())
+                              ? "إظهار الكود"
+                              : "إخفاء الكود"
+                          }
+                          className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
+                        >
+                          {hiddenCodes.has(row.code.trim()) ? (
+                            <Eye className="size-3.5" />
+                          ) : (
+                            <EyeOff className="size-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </td>
                     <td className="px-3 py-3 text-center align-middle" dir="auto">
                       {row.name}
