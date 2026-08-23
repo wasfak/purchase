@@ -264,12 +264,14 @@ function isOverdue(order: Order, month: string): boolean {
 // How many days ahead of the order day counts as "due soon".
 const DUE_SOON_DAYS = 4;
 
-// An order is "due soon" when it's not done and the next real-calendar
-// occurrence of its order day is DUE_SOON_DAYS or fewer days away. This is
-// measured against today's actual date — not the month sheet being viewed — so
-// that when you pre-start next month's sheet, an order whose day is coming up
-// this week still lights up amber. e.g. today is the 27th and an order's day is
-// the 28th → due tomorrow → amber, even while viewing next month.
+// An order is "due soon" when it's not done and its order day, in the current
+// real month, is either coming up within DUE_SOON_DAYS or has already passed.
+// Keeping a passed-but-not-done day amber is deliberate: an order whose day was
+// the 20th still shows on the 23rd so you can catch the ones you skipped or
+// forgot, rather than it silently rolling to next month. It's measured against
+// today's actual date — not the month sheet being viewed — so pre-starting next
+// month's sheet still lights up an order whose day is coming up this week. Once
+// it's more than OVERDUE_GRACE_DAYS past, isOverdue turns the row red instead.
 function isDueSoon(order: Order): boolean {
   if (isNoNeed(order)) return false; // nothing to do this month
   const day = parseInt(order.orderDay ?? "", 10);
@@ -278,14 +280,12 @@ function isDueSoon(order: Order): boolean {
 
   const now = new Date();
   now.setHours(0, 0, 0, 0);
-  // The order day in the current real month; if it's already past, roll to the
-  // same day next month — that's the next time this order comes due.
+  // The order day in the current real month (clamped to the last day for short
+  // months). No roll-forward: a day that's already passed gives a negative
+  // daysUntil, which stays within the window and keeps the row amber.
   const clampDay = (y: number, m: number) =>
     Math.min(day, new Date(y, m + 1, 0).getDate());
-  let due = new Date(now.getFullYear(), now.getMonth(), clampDay(now.getFullYear(), now.getMonth()));
-  if (due.getTime() < now.getTime()) {
-    due = new Date(now.getFullYear(), now.getMonth() + 1, clampDay(now.getFullYear(), now.getMonth() + 1));
-  }
+  const due = new Date(now.getFullYear(), now.getMonth(), clampDay(now.getFullYear(), now.getMonth()));
   const daysUntil = (due.getTime() - now.getTime()) / 86_400_000;
   return daysUntil <= DUE_SOON_DAYS;
 }
@@ -1361,7 +1361,7 @@ export function OrdersBoard() {
                         "border-b border-border/60 last:border-0",
                         done &&
                           "bg-emerald-500/10 hover:bg-emerald-500/15 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/15",
-                        dueSoon && "bg-amber-500/15 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:hover:bg-amber-400/15",
+                        dueSoon && !overdue && "bg-amber-500/15 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:hover:bg-amber-400/15",
                         overdue && "bg-destructive/10",
                         noNeed && "bg-muted/40 text-muted-foreground",
                         // A finished order (its "Finished" date is filled) shows
