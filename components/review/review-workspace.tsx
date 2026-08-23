@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import {
@@ -13,9 +14,11 @@ import {
   Link2,
   Link2Off,
   Loader2,
+  Plane,
   RotateCcw,
   Save,
   Search,
+  StickyNote,
   Trash2,
   TriangleAlert,
   Upload,
@@ -24,6 +27,9 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { monthLabel } from "@/lib/dates";
+import { parseCell, fmtBalance } from "@/lib/tasfya/flying";
+import { bonusPercent } from "@/lib/tasfya/report";
 import { DataTable } from "@/components/ui/data-table";
 import {
   isNumericColumn,
@@ -63,6 +69,45 @@ const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha", "no need"] as const;
 // to a company there — so you can tell, per row, whether that company's order
 // was recently sent (within the window) and shouldn't be re-ordered.
 const SEND_COL = "Send date"; // the recent send date, else blank
+
+// Column that flags a code which already appears on a recently-worked flying
+// (تصفية ع الطاير) sheet — i.e. it's already being covered by distributors, so
+// you shouldn't re-order it. Click the badge to see the distributor breakdown,
+// its الباقى, note, and which month/company it's coming from.
+const FLYING_COL = "ع الطاير";
+
+// How recently a flying sheet must have been worked on for its codes to light up
+// here. e.g. a sheet saved on the 20th keeps flagging its codes through the 27th.
+// Measured against today (the sheet's updatedAt).
+const RECENT_FLYING_DAYS = 7;
+
+// One distributor column on a flying sheet.
+type FlyingCol = { id: string; name: string };
+
+// One flying (ع الطاير) row a review code was found on, with where it came from.
+type FlyingHit = {
+  company: string;
+  month: string;
+  savedAt: number; // epoch ms of when the flying sheet was last saved
+  name: string;
+  order: number; // الكمية المطلوبة
+  remaining: number; // الباقى: <0 short, 0 covered, >0 surplus
+  note: string;
+  columns: FlyingCol[];
+  cells: Record<string, string>;
+};
+
+// Arabic الباقى status label for a flying remaining value.
+const flyingLabel = (rem: number): string =>
+  rem < 0 ? "ناقص" : rem === 0 ? "مكتمل" : "زيادة";
+
+// Pill colour for a الباقى value: short (red), covered (green), surplus (amber).
+const flyingTone = (rem: number): string =>
+  rem < 0
+    ? "bg-red-500/15 text-red-700 dark:text-red-400"
+    : rem === 0
+      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+      : "bg-amber-500/15 text-amber-700 dark:text-amber-400";
 
 // Header keys in the sheet that name the supplier/company for a row, matched
 // loosely (normalized) so either the Arabic "الموردين" or an English label works.
@@ -252,6 +297,14 @@ export function ReviewWorkspace({
   // session with no stored upload time).
   const [uploadedAt, setUploadedAt] = React.useState<number | null>(null);
 
+  // Recent flying (ع الطاير) rows keyed by normalized code, so a review row can
+  // show that its code is already being covered by distributors this cycle.
+  // `null` while loading; the map only holds codes that were actually found.
+  const [flyingByCode, setFlyingByCode] = React.useState<Map<
+    string,
+    FlyingHit[]
+  > | null>(null);
+
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
@@ -340,18 +393,21 @@ export function ReviewWorkspace({
   // app-managed ones (mark date + late flag + category). Kept separate from
   // `columns` so export / save / code-history logic still only see the sheet's
   // own columns.
-  const tableColumns = React.useMemo(
-    () => [
+  const tableColumns = React.useMemo(() => {
+    const hasCode = columns.some((c) => normalizeHeader(c) === "code");
+    return [
       ...columns,
       // Only surface the Orders column when the sheet actually has a supplier
       // column to match on — otherwise it'd be all dashes.
       ...(supplierCol ? [SEND_COL] : []),
+      // Flag codes already on a recent flying (ع الطاير) sheet. Personal Review
+      // only (showOrders), and only when there's a code column to match on.
+      ...(showOrders && hasCode ? [FLYING_COL] : []),
       // The "Status date" + "Late" columns can be turned off per workspace.
       ...(showStatusColumns ? [MARKED_COL, LATE_COL] : []),
       CATEGORY_COL,
-    ],
-    [columns, supplierCol, showStatusColumns],
-  );
+    ];
+  }, [columns, supplierCol, showOrders, showStatusColumns]);
 
   // Re-read the clock hourly so a tab left open overnight starts flagging rows
   // that crossed the late threshold while it sat there.
@@ -378,25 +434,37 @@ export function ReviewWorkspace({
   // flag and the category into each row so the table can filter/sort/search on
   // them. The late cell holds the plain word so searching "late" finds it and
   // the column filter has a single clean value; the day count lives in the badge.
-  const tableRows = React.useMemo(
-    () =>
-      visibleDataRows.map((r) => {
-        const at = statusAt.get(r.__id);
-        // The date goes into the row as plain text so the table can
-        // filter/sort/search it: the date itself when it was sent within the
-        // window, and "" otherwise (no match, or an out-of-window / absent send).
-        const info = orderFor(r);
-        return {
-          ...r,
-          [SEND_COL]:
-            info && isSentInWindow(info.sendDate) ? info.sendDate : "",
-          [MARKED_COL]: at ? formatDate(at) : "",
-          [LATE_COL]: isLate(r.__id) ? "Late" : "",
-          [CATEGORY_COL]: category.get(r.__id) ?? "",
-        };
-      }),
-    [visibleDataRows, statusAt, category, isLate, orderFor, isSentInWindow],
-  );
+  const tableRows = React.useMemo(() => {
+    const codeKey = columns.find((c) => normalizeHeader(c) === "code");
+    return visibleDataRows.map((r) => {
+      const at = statusAt.get(r.__id);
+      // The date goes into the row as plain text so the table can
+      // filter/sort/search it: the date itself when it was sent within the
+      // window, and "" otherwise (no match, or an out-of-window / absent send).
+      const info = orderFor(r);
+      // The ع الطاير cell just marks presence as plain text ("ع الطاير" / "") so
+      // the column filters/searches cleanly; the badge + breakdown are rendered
+      // from flyingByCode in renderCell.
+      const hits = codeKey ? flyingByCode?.get(normCode(r[codeKey])) : undefined;
+      return {
+        ...r,
+        [SEND_COL]: info && isSentInWindow(info.sendDate) ? info.sendDate : "",
+        [FLYING_COL]: hits && hits.length > 0 ? "ع الطاير" : "",
+        [MARKED_COL]: at ? formatDate(at) : "",
+        [LATE_COL]: isLate(r.__id) ? "Late" : "",
+        [CATEGORY_COL]: category.get(r.__id) ?? "",
+      };
+    });
+  }, [
+    visibleDataRows,
+    columns,
+    statusAt,
+    category,
+    isLate,
+    orderFor,
+    isSentInWindow,
+    flyingByCode,
+  ]);
 
   const lateCount = React.useMemo(
     () => [...completed].filter(isLate).length,
@@ -420,6 +488,59 @@ export function ReviewWorkspace({
     () => columns.find((c) => normalizeHeader(c) === "code"),
     [columns],
   );
+
+  // A stable, deduped key of this sheet's codes so the Auto Tasfya lookup only
+  // re-runs when the actual set of codes changes (not on every cell edit).
+  const codeListKey = React.useMemo(() => {
+    if (!codeCol) return "";
+    const set = new Set<string>();
+    for (const r of rows) {
+      const c = normCode(r[codeCol]);
+      if (c) set.add(c);
+    }
+    return [...set].sort().join(",");
+  }, [rows, codeCol]);
+
+  // Look up every code in this sheet against flying (ع الطاير) sheets worked on in
+  // the last RECENT_FLYING_DAYS, so codes already covered by distributors get
+  // flagged. Personal Review only (showOrders) — flying sheets are per-owner, so
+  // it's meaningless on the shared, standalone workspace.
+  React.useEffect(() => {
+    if (!showOrders || !codeCol) {
+      setFlyingByCode(null);
+      return;
+    }
+    const codes = codeListKey ? codeListKey.split(",") : [];
+    if (codes.length === 0) {
+      setFlyingByCode(new Map());
+      return;
+    }
+    setFlyingByCode(null);
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/flying/review-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes, days: RECENT_FLYING_DAYS }),
+        });
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const map = new Map<string, FlyingHit[]>();
+        for (const r of data.results ?? []) {
+          if (Array.isArray(r.hits) && r.hits.length > 0)
+            map.set(String(r.code).trim(), r.hits as FlyingHit[]);
+        }
+        if (active) setFlyingByCode(map);
+      } catch {
+        // Flying sheets unavailable — the column just reads as a dash.
+        if (active) setFlyingByCode(new Map());
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [showOrders, codeCol, codeListKey]);
 
   const refreshSaved = React.useCallback(async () => {
     try {
@@ -1722,6 +1843,21 @@ export function ReviewWorkspace({
                   </span>
                 );
               }
+              if (col === FLYING_COL) {
+                if (!codeCol)
+                  return <span className="text-muted-foreground/40">—</span>;
+                // Still loading the lookup — show a subtle spinner rather than a
+                // dash, so a real "not on any sheet" isn't confused with "not
+                // ready".
+                if (flyingByCode === null)
+                  return (
+                    <Loader2 className="mx-auto size-3.5 animate-spin text-muted-foreground/50" />
+                  );
+                const hits = flyingByCode.get(normCode(row[codeCol]));
+                if (!hits || hits.length === 0)
+                  return <span className="text-muted-foreground/40">—</span>;
+                return <FlyingReviewCell hits={hits} />;
+              }
               if (col === LATE_COL) {
                 if (stringify(row[LATE_COL]) === "")
                   return <span className="text-muted-foreground/40">—</span>;
@@ -1769,6 +1905,152 @@ export function ReviewWorkspace({
             }
           />
         </>
+      )}
+    </div>
+  );
+}
+
+// A code that already appears on a recent flying (ع الطاير) sheet: a colored
+// badge (ع الطاير + الباقى) that opens a details modal showing, for each sheet it
+// was found on, where it's coming from (month/company), the distributor
+// breakdown, its الكمية / الباقى and any note — so you can check the code's data
+// before re-ordering.
+function FlyingReviewCell({ hits }: { hits: FlyingHit[] }) {
+  const [open, setOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="موجود في تصفية ع الطاير حديثة — اضغط لعرض بياناته"
+        className={cn(
+          "mx-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold transition-shadow hover:ring-2 hover:ring-offset-1 hover:ring-offset-background",
+          "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+        )}
+      >
+        <Plane className="size-3 shrink-0" />
+        ع الطاير
+        {hits.length > 1 && <span className="opacity-70">×{hits.length}</span>}
+      </button>
+      {open &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => setOpen(false)}
+          >
+            <div
+              dir="rtl"
+              onClick={(e) => e.stopPropagation()}
+              className="flex max-h-[88vh] w-[min(46rem,94vw)] flex-col overflow-auto rounded-lg border border-border bg-card p-4 text-foreground shadow-xl"
+            >
+              <div className="mb-3 flex items-center justify-between gap-3 border-b border-border pb-2">
+                <span className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Plane className="size-4 text-primary" /> تصفية ع الطاير
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label="إغلاق"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+              <p className="mb-3 text-xs text-muted-foreground">
+                هذا الكود موجود في {hits.length}{" "}
+                {hits.length === 1 ? "صفحة" : "صفحات"} تصفية ع الطاير خلال آخر{" "}
+                {RECENT_FLYING_DAYS} أيام — راجع بياناته قبل إعادة الطلب.
+              </p>
+              <div className="space-y-3">
+                {hits.map((h, i) => (
+                  <FlyingHitCard key={`${h.company}-${h.month}-${i}`} hit={h} />
+                ))}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+// One flying sheet a code was found on: the source (month/company), its
+// الكمية / الباقى / note, and the per-distributor breakdown (base + بونص).
+function FlyingHitCard({ hit }: { hit: FlyingHit }) {
+  // Only distributors that actually have a value for this code, so the card
+  // stays compact.
+  const filled = hit.columns
+    .map((c) => ({ col: c, ...parseCell(hit.cells[c.id]) }))
+    .filter((c) => c.base > 0 || c.bounce > 0);
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold" dir="auto">
+          {hit.company || "—"}
+          <span className="ms-2 font-normal text-muted-foreground">
+            {monthLabel(hit.month)}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums",
+            flyingTone(hit.remaining),
+          )}
+        >
+          {flyingLabel(hit.remaining)} · الباقى {fmtBalance(hit.remaining)}
+        </span>
+      </div>
+      {hit.name && (
+        <div className="mt-1 text-sm" dir="auto">
+          {hit.name}
+        </div>
+      )}
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>الكمية المطلوبة: {hit.order.toLocaleString("en-US")}</span>
+        <span>· حُفظت {new Date(hit.savedAt).toLocaleDateString()}</span>
+      </div>
+
+      {filled.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {filled.map(({ col, base, bounce }) => (
+            <span
+              key={col.id}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+            >
+              <span className="font-medium" dir="auto">
+                {col.name || "—"}
+              </span>
+              <span className="tabular-nums" dir="ltr">
+                {base.toLocaleString("en-US")}
+                {bounce > 0 && (
+                  <span className="ms-1 font-medium text-amber-600 dark:text-amber-400">
+                    +{bonusPercent(base + bounce, bounce)}%
+                  </span>
+                )}
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-2 text-xs text-muted-foreground/70">
+          لا توجد كميات موزّعة بعد على الموردين.
+        </div>
+      )}
+
+      {hit.note && hit.note.trim() && (
+        <div className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+          <StickyNote className="mt-0.5 size-3.5 shrink-0" />
+          <span dir="auto">{hit.note}</span>
+        </div>
       )}
     </div>
   );
