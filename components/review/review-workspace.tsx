@@ -1819,7 +1819,7 @@ export function ReviewWorkspace({
                   <select
                     value={category.get(row.__id) ?? ""}
                     onChange={(e) => setCategoryFor(row.__id, e.target.value)}
-                    className="h-8 w-full min-w-28 rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                    className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
                   >
                     <option value="">—</option>
                     {CATEGORY_OPTIONS.map((o) => (

@@ -362,7 +362,24 @@ export function DataTable({
         style={{ maxHeight }}
         className="overflow-auto rounded-xl border border-border"
       >
-        <table className="w-full border-collapse text-sm">
+        <table className="w-full table-fixed border-collapse text-sm">
+          {/* Fixed layout so the table never exceeds the container width (no
+              horizontal scroll). Selection/Done/Ignore and numeric columns get a
+              tight fixed width; every other column shares the remaining space and
+              wraps its content. */}
+          <colgroup>
+            {selection && <col style={{ width: "2.25rem" }} />}
+            {completion && <col style={{ width: "3rem" }} />}
+            {columns.map((col) => (
+              <col
+                key={col}
+                style={
+                  numericCols.has(col) ? { width: "4.75rem" } : undefined
+                }
+              />
+            ))}
+            {ignorable && <col style={{ width: "4.5rem" }} />}
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-card">
             <tr>
               {selection && (
@@ -406,7 +423,7 @@ export function DataTable({
                         className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1 py-1 hover:bg-muted/60"
                         title={`Sort by ${col}`}
                       >
-                        <span className="truncate" title={col}>
+                        <span className="min-w-0 break-words" title={col}>
                           {col}
                         </span>
                         {sorted ? (
@@ -527,7 +544,7 @@ export function DataTable({
                         <td
                           key={col}
                           className={cn(
-                            "px-3 py-2 text-center align-top",
+                            "px-2 py-2 text-center align-top break-words",
                             numeric && "tabular-nums",
                           )}
                         >
@@ -539,7 +556,7 @@ export function DataTable({
                       <td
                         key={col}
                         className={cn(
-                          "px-3 py-2 align-top",
+                          "px-2 py-2 align-top break-words",
                           numeric && "tabular-nums",
                           ignored && "line-through",
                         )}
