@@ -652,8 +652,12 @@ export function ReviewWorkspace({
         const data = await res.json();
         const map = new Map<string, FlyingHit[]>();
         for (const r of data.results ?? []) {
-          if (Array.isArray(r.hits) && r.hits.length > 0)
-            map.set(String(r.code).trim(), r.hits as FlyingHit[]);
+          // Only flag a code when the flying sheet actually covers it: keep hits
+          // whose الباقى is 0 (مكتمل) or positive (زيادة), drop ناقص (<0).
+          const hits = Array.isArray(r.hits)
+            ? (r.hits as FlyingHit[]).filter((h) => h.remaining >= 0)
+            : [];
+          if (hits.length > 0) map.set(String(r.code).trim(), hits);
         }
         if (active) setFlyingByCode(map);
       } catch {
