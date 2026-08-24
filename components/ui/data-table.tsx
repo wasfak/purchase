@@ -362,11 +362,12 @@ export function DataTable({
         style={{ maxHeight }}
         className="overflow-auto rounded-xl border border-border"
       >
-        <table className="w-full table-fixed border-collapse text-sm">
-          {/* Fixed layout so the table never exceeds the container width (no
-              horizontal scroll). Selection/Done/Ignore and numeric columns get a
-              tight fixed width; every other column shares the remaining space and
-              wraps its content. */}
+        <table className="w-full table-auto border-collapse text-sm">
+          {/* Auto layout so each column sizes to its content — headers stay on
+              one line and read normally. The table fills the container (w-full)
+              and only scrolls horizontally when the content genuinely can't fit.
+              The col widths below are minimums/hints: control/numeric columns
+              stay tight, the item-name column is given room to breathe. */}
           <colgroup>
             {selection && <col style={{ width: "2.25rem" }} />}
             {completion && <col style={{ width: "3rem" }} />}
@@ -374,7 +375,9 @@ export function DataTable({
               <col
                 key={col}
                 style={
-                  numericCols.has(col) ? { width: "4.75rem" } : undefined
+                  numericCols.has(col)
+                    ? { width: "5rem" }
+                    : { minWidth: "6rem" }
                 }
               />
             ))}
@@ -423,7 +426,7 @@ export function DataTable({
                         className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1 py-1 hover:bg-muted/60"
                         title={`Sort by ${col}`}
                       >
-                        <span className="min-w-0 break-words" title={col}>
+                        <span className="whitespace-nowrap" title={col}>
                           {col}
                         </span>
                         {sorted ? (

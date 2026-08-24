@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  SlidersHorizontal,
   StickyNote,
   Trash2,
   TriangleAlert,
@@ -27,7 +28,8 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { monthLabel } from "@/lib/dates";
+import { monthLabel, todayStr } from "@/lib/dates";
+import { downloadJson } from "@/lib/backup";
 import { parseCell, fmtBalance } from "@/lib/tasfya/flying";
 import { bonusPercent } from "@/lib/tasfya/report";
 import { DataTable } from "@/components/ui/data-table";
@@ -57,13 +59,20 @@ type CodeSearchHit = {
   status: "done" | "ignored" | "pending";
   statusAt?: number;
   category?: string;
+  note?: string;
 };
 
 // App-managed columns appended after the sheet's own columns in the table.
 const MARKED_COL = "Status date"; // when the row was marked done/ignored
 const LATE_COL = "Late"; // ordered this long ago but still showing up
 const CATEGORY_COL = "Category"; // pharma / sena / sherktha
-const CATEGORY_OPTIONS = ["pharma", "sena", "sherktha", "no need"] as const;
+const CATEGORY_OPTIONS = [
+  "pharma",
+  "sena",
+  "sherktha",
+  "no need",
+  "notes",
+] as const;
 
 // Column pulled from the Orders tab by matching this row's supplier (الموردين)
 // to a company there — so you can tell, per row, whether that company's order
@@ -202,6 +211,55 @@ const normCode = (raw: Cell): string => {
   return Number.isFinite(n) ? String(n) : s;
 };
 
+// Mirror a freshly-uploaded review sheet into the shared "0 codes" store
+// (/api/zero-codes) so its codes are searchable there later, alongside the daily
+// AppSheet exports. Best-effort: the caller never blocks/fails the upload on it.
+// The zero-codes store is one document per (user, day), so re-uploading a sheet
+// for the same date replaces it there — matching how the 0 codes page behaves.
+async function syncToZeroCodes(data: Row[], fileName: string): Promise<number> {
+  const keys = new Set<string>();
+  for (const r of data) for (const k of Object.keys(r)) keys.add(k);
+  const find = (cands: string[]): string | undefined => {
+    const want = cands.map((c) => normalizeHeader(c).toLowerCase());
+    return [...keys].find((k) =>
+      want.includes(normalizeHeader(k).toLowerCase()),
+    );
+  };
+
+  const codeKey = find(["code"]);
+  if (!codeKey) return 0; // nothing to search on
+  const nameKey = find(["اسم الصنف", "item name", "name"]);
+  const orderKey = find(["Order"]);
+  const supplierKey = find(["الموردين", "المورد", "supplier"]);
+  // The "-0-" marker column is only present on the daily exports; a plain review
+  // sheet won't have it, in which case rows just count as "appeared".
+  const zeroKey = find(["-0-", "0"]);
+
+  const rows = data
+    .map((r) => ({
+      code: stringify(r[codeKey]).trim(),
+      name: nameKey ? stringify(r[nameKey]).trim() : "",
+      order: orderKey ? stringify(r[orderKey]).trim() : "",
+      supplier: supplierKey ? stringify(r[supplierKey]).trim() : "",
+      marked: zeroKey ? stringify(r[zeroKey]).trim() !== "" : false,
+    }))
+    .filter((r) => r.code);
+  if (rows.length === 0) return 0;
+
+  // Prefer a YYYY-MM-DD baked into the filename (as the AppSheet exports carry),
+  // else file it under today so it's still findable.
+  const m = fileName.match(/(\d{4}-\d{2}-\d{2})/);
+  const date = m ? m[1] : todayStr();
+
+  const res = await fetch("/api/zero-codes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ date, fileName, rows }),
+  });
+  if (!res.ok) throw new Error("zero-codes save failed");
+  return rows.length;
+}
+
 export function ReviewWorkspace({
   store,
   // When false, this workspace is fully standalone: it never reads the Orders
@@ -209,10 +267,14 @@ export function ReviewWorkspace({
   showOrders = true,
   // When false, the "Status date" and "Late" columns are dropped from the table.
   showStatusColumns = true,
+  // Namespaces this workspace's per-browser UI prefs (which columns are hidden)
+  // so the main Review and Review Aya don't share the same saved choice.
+  prefsKey = "review",
 }: {
   store: ReviewStore;
   showOrders?: boolean;
   showStatusColumns?: boolean;
+  prefsKey?: string;
 }) {
   const {
     clearCodeStatuses,
@@ -241,6 +303,9 @@ export function ReviewWorkspace({
   const [category, setCategory] = React.useState<Map<string, string>>(
     () => new Map(),
   );
+  // Per-row-id free-text note, shown/edited when the row's category is "notes".
+  // Persisted with the sheet and carried across sheets by code, like category.
+  const [note, setNote] = React.useState<Map<string, string>>(() => new Map());
   const [name, setName] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -254,6 +319,36 @@ export function ReviewWorkspace({
   const [hideIgnored, setHideIgnored] = React.useState(false);
   const [hideDone, setHideDone] = React.useState(false);
   const [hideNoNeed, setHideNoNeed] = React.useState(false);
+
+  // Which columns the user has chosen to hide from the table. Persisted per
+  // browser under `prefsKey` so the choice survives reloads. Loaded in an effect
+  // (not the initializer) to avoid an SSR/hydration mismatch.
+  const [hiddenCols, setHiddenCols] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const [colsHydrated, setColsHydrated] = React.useState(false);
+  const [colMenuOpen, setColMenuOpen] = React.useState(false);
+  const colsStorageKey = `review-hidden-cols:${prefsKey}`;
+
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem(colsStorageKey);
+      if (raw) setHiddenCols(new Set(JSON.parse(raw) as string[]));
+    } catch {
+      // No/invalid storage — start with everything visible.
+    } finally {
+      setColsHydrated(true);
+    }
+  }, [colsStorageKey]);
+
+  React.useEffect(() => {
+    if (!colsHydrated) return;
+    try {
+      localStorage.setItem(colsStorageKey, JSON.stringify([...hiddenCols]));
+    } catch {
+      // Storage unavailable — the choice just won't persist.
+    }
+  }, [hiddenCols, colsHydrated, colsStorageKey]);
 
   // When on (default), a new upload carries over done/ignored/category by code
   // from previous sheets, and the current sheet feeds that shared history. When
@@ -306,6 +401,18 @@ export function ReviewWorkspace({
   > | null>(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const colMenuRef = React.useRef<HTMLDivElement>(null);
+
+  // Close the "Columns" menu when clicking outside it.
+  React.useEffect(() => {
+    if (!colMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (colMenuRef.current && !colMenuRef.current.contains(e.target as Node))
+        setColMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [colMenuOpen]);
 
   React.useEffect(() => {
     if (!showOrders) return;
@@ -408,6 +515,23 @@ export function ReviewWorkspace({
       CATEGORY_COL,
     ];
   }, [columns, supplierCol, showOrders, showStatusColumns]);
+
+  // The columns actually shown in the table, after removing any the user hid via
+  // the "Columns" menu. `tableColumns` stays the full list (so the menu can
+  // offer every column and export/history still see them all).
+  const visibleTableColumns = React.useMemo(
+    () => tableColumns.filter((c) => !hiddenCols.has(c)),
+    [tableColumns, hiddenCols],
+  );
+
+  const toggleColumn = React.useCallback((col: string) => {
+    setHiddenCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(col)) next.delete(col);
+      else next.add(col);
+      return next;
+    });
+  }, []);
 
   // Re-read the clock hourly so a tab left open overnight starts flagging rows
   // that crossed the late threshold while it sat there.
@@ -583,6 +707,7 @@ export function ReviewWorkspace({
           setIgnored(new Set(session.ignored));
           setStatusAt(new Map(session.statusAt ?? []));
           setCategory(new Map(session.category ?? []));
+          setNote(new Map(session.note ?? []));
           setCurrentId(session.currentId);
           setUploadedAt(session.uploadedAt ?? null);
         }
@@ -613,6 +738,7 @@ export function ReviewWorkspace({
         ignored: [...ignored],
         statusAt: [...statusAt],
         category: [...category],
+        note: [...note],
         currentId,
         uploadedAt: uploadedAt ?? undefined,
       }).catch(() => {});
@@ -628,6 +754,7 @@ export function ReviewWorkspace({
     ignored,
     statusAt,
     category,
+    note,
     currentId,
     uploadedAt,
     clearSession,
@@ -652,6 +779,7 @@ export function ReviewWorkspace({
             ? "ignored"
             : undefined;
         const cat = category.get(id) || undefined;
+        const noteText = note.get(id) || undefined;
         // Only ADD or UPGRADE history from the current sheet — never let an
         // unmarked / uncategorized row clobber what a previous sheet recorded.
         // (Clearing a status is done explicitly via unmarkAll / unmarkByCodes.)
@@ -664,12 +792,14 @@ export function ReviewWorkspace({
           update.at = statusAt.get(id);
         }
         if (cat) update.category = cat;
-        if (update.status || update.category) updates[code] = update;
+        if (noteText) update.note = noteText;
+        if (update.status || update.category || update.note)
+          updates[code] = update;
       });
       void mergeCodeStatuses(updates).catch(() => {});
     }, 500);
     return () => clearTimeout(handle);
-  }, [hydrated, linkHistory, codeCol, rows, completed, ignored, statusAt, category, mergeCodeStatuses]);
+  }, [hydrated, linkHistory, codeCol, rows, completed, ignored, statusAt, category, note, mergeCodeStatuses]);
 
   const parseFile = React.useCallback(async (file: File) => {
     setLoading(true);
@@ -704,6 +834,7 @@ export function ReviewWorkspace({
         const carriedIgnored = new Set<string>();
         const carriedAt = new Map<string, number>();
         const carriedCat = new Map<string, string>();
+        const carriedNote = new Map<string, string>();
         if (codeKey && linkHistory) {
           const history = await getCodeStatuses();
           data.forEach((r, i) => {
@@ -729,6 +860,9 @@ export function ReviewWorkspace({
             }
             // Category (if any) always carries, since it's not a done/ignored state.
             if (meta.category) carriedCat.set(id, meta.category);
+            // The note carries with the code too, so a saved note re-appears on
+            // the next sheet the code shows up on.
+            if (meta.note) carriedNote.set(id, meta.note);
           });
         }
 
@@ -738,6 +872,7 @@ export function ReviewWorkspace({
         setIgnored(carriedIgnored);
         setStatusAt(carriedAt);
         setCategory(carriedCat);
+        setNote(carriedNote);
         setUploadedAt(uploadedNow);
         setCarried({ done: carriedDone.size, ignored: carriedIgnored.size });
 
@@ -767,6 +902,7 @@ export function ReviewWorkspace({
               ignored: carriedIgnored.has(id),
               statusAt: carriedAt.get(id),
               category: carriedCat.get(id),
+              note: carriedNote.get(id),
             };
           });
           const newId = await saveDataset({
@@ -786,6 +922,20 @@ export function ReviewWorkspace({
           setCurrentId(null);
           toast.warning("Uploaded, but auto-save failed — save manually.");
         }
+
+        // Also mirror the sheet into the shared "0 codes" store so its codes are
+        // searchable there later. Personal Review only (showOrders) — the shared
+        // standalone workspace shouldn't feed the per-owner 0 codes list. Fire
+        // and forget: the review upload isn't blocked on it.
+        if (showOrders) {
+          void syncToZeroCodes(data, file.name)
+            .then((n) => {
+              if (n > 0) toast.success(`Also added to 0 codes (${n} rows).`);
+            })
+            .catch(() => {
+              toast.warning("Couldn't also add this to 0 codes.");
+            });
+        }
       }
       setFileName(file.name);
       setName(displayName);
@@ -801,7 +951,7 @@ export function ReviewWorkspace({
     } finally {
       setLoading(false);
     }
-  }, [linkHistory, refreshSaved, getCodeStatuses, saveDataset]);
+  }, [linkHistory, refreshSaved, getCodeStatuses, saveDataset, showOrders]);
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -889,6 +1039,16 @@ export function ReviewWorkspace({
     });
   };
 
+  const setNoteFor = (id: string, value: string) => {
+    setDirty(true);
+    setNote((prev) => {
+      const next = new Map(prev);
+      if (value) next.set(id, value);
+      else next.delete(id);
+      return next;
+    });
+  };
+
   const toggleSelectMany = (ids: string[], checked: boolean) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -930,6 +1090,7 @@ export function ReviewWorkspace({
         ignored: ignored.has(String(i)),
         statusAt: statusAt.get(String(i)),
         category: category.get(String(i)),
+        note: note.get(String(i)),
       }));
       const id = await saveDataset({
         id: currentId ?? undefined,
@@ -959,7 +1120,8 @@ export function ReviewWorkspace({
     const exportCols = columns.filter(
       (c) => !exclude.includes(normalizeHeader(c)),
     );
-    const header = [...exportCols, CATEGORY_COL];
+    const NOTE_COL = "Note";
+    const header = [...exportCols, CATEGORY_COL, NOTE_COL];
     const data = rows
       .map((r, i) => ({ r, i }))
       .filter(({ i }) => !ignored.has(String(i)))
@@ -967,6 +1129,7 @@ export function ReviewWorkspace({
         const obj: Record<string, Cell> = {};
         for (const c of exportCols) obj[c] = r[c] ?? null;
         obj[CATEGORY_COL] = category.get(String(i)) ?? null;
+        obj[NOTE_COL] = note.get(String(i)) ?? null;
         return obj;
       });
 
@@ -983,6 +1146,33 @@ export function ReviewWorkspace({
     XLSX.writeFile(wb, `${base}.xlsx`);
     toast.success(`Exported ${data.length} rows`);
   };
+
+  // Download a full JSON backup of this workspace — every saved sheet with its
+  // rows, the cross-sheet code history, and the current working session — so
+  // there's always an offline copy on disk, independent of browser and server.
+  const [backingUp, setBackingUp] = React.useState(false);
+  const downloadBackup = React.useCallback(async () => {
+    setBackingUp(true);
+    try {
+      const [datasets, codes, session] = await Promise.all([
+        loadAllDatasets(),
+        getCodeStatuses(),
+        loadSession(),
+      ]);
+      downloadJson("review-backup", {
+        exportedAt: new Date().toISOString(),
+        kind: "review",
+        datasets,
+        codes,
+        session,
+      });
+      toast.success(`Backed up ${datasets.length} sheet(s) to a file.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't build the backup");
+    } finally {
+      setBackingUp(false);
+    }
+  }, [loadAllDatasets, getCodeStatuses, loadSession]);
 
   // Mark every row whose code appears in the pasted list as done. Codes may be
   // separated by newlines, spaces, commas, semicolons, or tabs. Matching is
@@ -1139,6 +1329,7 @@ export function ReviewWorkspace({
             status: sr.completed ? "done" : sr.ignored ? "ignored" : "pending",
             statusAt: sr.statusAt,
             category: sr.category,
+            note: sr.note,
           });
         });
       }
@@ -1169,11 +1360,14 @@ export function ReviewWorkspace({
 
     const newStatusAt = new Map<string, number>();
     const newCategory = new Map<string, string>();
+    const newNote = new Map<string, string>();
     kept.forEach((oldI, newI) => {
       const at = statusAt.get(String(oldI));
       if (at != null) newStatusAt.set(String(newI), at);
       const cat = category.get(String(oldI));
       if (cat) newCategory.set(String(newI), cat);
+      const nt = note.get(String(oldI));
+      if (nt) newNote.set(String(newI), nt);
     });
 
     setRows(kept.map((i) => rows[i]));
@@ -1181,10 +1375,11 @@ export function ReviewWorkspace({
     setIgnored(new Set());
     setStatusAt(newStatusAt);
     setCategory(newCategory);
+    setNote(newNote);
     setSelected(new Set());
     setDirty(true);
     return removed;
-  }, [rows, completed, ignored, statusAt, category]);
+  }, [rows, completed, ignored, statusAt, category, note]);
 
   // Clear the done/ignored status on every row in the open sheet at once — the
   // rows all stay, they just go back to pending (their status date drops too).
@@ -1248,11 +1443,13 @@ export function ReviewWorkspace({
               ? "ignored"
               : undefined;
           const cat = category.get(id) || undefined;
-          if (status || cat) {
+          const nt = note.get(id) || undefined;
+          if (status || cat || nt) {
             updates[code] = {
               status,
               at: status ? statusAt.get(id) : undefined,
               category: cat,
+              note: nt,
             };
           }
         });
@@ -1308,6 +1505,13 @@ export function ReviewWorkspace({
           ),
         ),
       );
+      setNote(
+        new Map(
+          ds.rows.flatMap((sr, i) =>
+            sr.note ? [[String(i), sr.note] as [string, string]] : [],
+          ),
+        ),
+      );
       setSelected(new Set());
       setFileName(ds.fileName);
       setName(ds.name);
@@ -1343,6 +1547,7 @@ export function ReviewWorkspace({
     setIgnored(new Set());
     setStatusAt(new Map());
     setCategory(new Map());
+    setNote(new Map());
     setSelected(new Set());
     setName("");
     setError(null);
@@ -1404,6 +1609,16 @@ export function ReviewWorkspace({
               <Flag /> Set as starter
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void downloadBackup()}
+            disabled={backingUp}
+            title="Download a JSON backup of every saved sheet, history and session"
+          >
+            {backingUp ? <Loader2 className="animate-spin" /> : <Download />}
+            Backup
+          </Button>
         </div>
       </div>
 
@@ -1547,6 +1762,15 @@ export function ReviewWorkspace({
                         {hit.category && (
                           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
                             {hit.category}
+                          </span>
+                        )}
+                        {hit.note && (
+                          <span
+                            className="max-w-full rounded-md bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400"
+                            dir="auto"
+                            title={hit.note}
+                          >
+                            📝 {hit.note}
                           </span>
                         )}
                         {hit.statusAt && (
@@ -1702,6 +1926,52 @@ export function ReviewWorkspace({
             <Button variant="outline" onClick={exportExcel}>
               <Download /> Export Excel
             </Button>
+            <div className="relative" ref={colMenuRef}>
+              <Button
+                variant={hiddenCols.size > 0 ? "default" : "outline"}
+                onClick={() => setColMenuOpen((v) => !v)}
+                title="Choose which columns are shown"
+              >
+                <SlidersHorizontal /> Columns
+                {hiddenCols.size > 0 && ` (${hiddenCols.size} hidden)`}
+              </Button>
+              {colMenuOpen && (
+                <div className="absolute right-0 z-30 mt-1 w-60 rounded-lg border border-border bg-card p-2 shadow-xl">
+                  <div className="flex items-center justify-between px-1 pb-1">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Show columns
+                    </span>
+                    {hiddenCols.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setHiddenCols(new Set())}
+                        className="text-xs font-medium text-primary hover:underline"
+                      >
+                        Show all
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-72 overflow-auto">
+                    {tableColumns.map((c) => (
+                      <label
+                        key={c}
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          className="size-3.5 shrink-0 accent-primary"
+                          checked={!hiddenCols.has(c)}
+                          onChange={() => toggleColumn(c)}
+                        />
+                        <span className="truncate" dir="auto" title={c}>
+                          {c}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {markOpen && codeCol && (
@@ -1809,25 +2079,38 @@ export function ReviewWorkspace({
             // Remount when the column set changes so filters/sort from a
             // previous sheet can't carry over and hide rows.
             key={columns.join("|")}
-            columns={tableColumns}
+            columns={visibleTableColumns}
             rows={tableRows}
             numericColumns={numericCols}
             copyableColumns={copyableCols}
             renderCell={(row, col) => {
               if (col === CATEGORY_COL) {
+                const cat = category.get(row.__id) ?? "";
                 return (
-                  <select
-                    value={category.get(row.__id) ?? ""}
-                    onChange={(e) => setCategoryFor(row.__id, e.target.value)}
-                    className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
-                  >
-                    <option value="">—</option>
-                    {CATEGORY_OPTIONS.map((o) => (
-                      <option key={o} value={o}>
-                        {o}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex flex-col gap-1">
+                    <select
+                      value={cat}
+                      onChange={(e) => setCategoryFor(row.__id, e.target.value)}
+                      className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                    >
+                      <option value="">—</option>
+                      {CATEGORY_OPTIONS.map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
+                    {cat === "notes" && (
+                      <textarea
+                        value={note.get(row.__id) ?? ""}
+                        onChange={(e) => setNoteFor(row.__id, e.target.value)}
+                        placeholder="Type a note…"
+                        rows={2}
+                        dir="auto"
+                        className="w-full min-w-0 resize-y rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                      />
+                    )}
+                  </div>
                 );
               }
               if (col === SEND_COL) {

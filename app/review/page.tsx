@@ -10,7 +10,8 @@ export default async function Page() {
         <p className="text-sm text-muted-foreground">
           Upload an Excel or CSV file to view it instantly, with Excel-style
           column filters, sorting, and search. Edit cells, mark rows complete,
-          and save sheets to this PC to reopen and compare later.
+          and save sheets to the cloud (your account) to reopen and compare
+          later from any device.
         </p>
       </div>
       <ReviewClient />

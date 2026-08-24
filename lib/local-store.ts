@@ -29,8 +29,10 @@ export type SavedRow = {
   ignored?: boolean;
   /** Epoch ms of when this row was marked done/ignored, if it was. */
   statusAt?: number;
-  /** User-picked category for this row (pharma / sena / sherktha). */
+  /** User-picked category for this row (pharma / sena / sherktha / notes). */
   category?: string;
+  /** Free-text note for this row (shown/edited when category is "notes"). */
+  note?: string;
 };
 
 export type SavedDatasetMeta = {
@@ -63,8 +65,10 @@ export type WorkingSession = {
   uploadedAt?: number;
   /** Per-row-id epoch ms of when it was marked done/ignored. */
   statusAt?: [string, number][];
-  /** Per-row-id category pick (pharma / sena / sherktha). */
+  /** Per-row-id category pick (pharma / sena / sherktha / notes). */
   category?: [string, string][];
+  /** Per-row-id free-text note (used with the "notes" category). */
+  note?: [string, string][];
 };
 
 // A running history of each code across every sheet, so a newly uploaded sheet
@@ -79,8 +83,10 @@ export type CodeMeta = {
   status?: CodeStatus;
   /** Epoch ms of when the status was first set. */
   at?: number;
-  /** The code's category (pharma / sena / sherktha). */
+  /** The code's category (pharma / sena / sherktha / notes). */
   category?: string;
+  /** The code's free-text note (kept with the "notes" category). */
+  note?: string;
 };
 
 // Older records stored the bare status string per code; newer ones store a
@@ -91,7 +97,7 @@ type CodesRecord = { id: string; map: Record<string, StoredCode> };
 const normalizeMeta = (v: StoredCode | undefined): CodeMeta =>
   v == null ? {} : typeof v === "string" ? { status: v } : v;
 
-const isEmptyMeta = (m: CodeMeta) => !m.status && !m.category;
+const isEmptyMeta = (m: CodeMeta) => !m.status && !m.category && !m.note;
 
 function txDone(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {

@@ -50,7 +50,6 @@ export default async function RootLayout({
           : []),
         { value: "orders", label: "Orders", href: "/orders", icon: "orders" },
         { value: "review", label: "Review", href: "/review", icon: "review" },
-        { value: "review-aya", label: "Review Aya", href: "/review-aya", icon: "review" },
         { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
         { value: "expiry", label: "Expiry", href: "/expiry", icon: "expiry" },
         {

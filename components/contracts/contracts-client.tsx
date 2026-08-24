@@ -37,13 +37,16 @@ import {
   type CodeAggregate,
   type PurchaseRow,
 } from "@/lib/contracts";
+import type { ContractMeta } from "@/lib/contracts-store";
 import {
   deleteContract,
   listContracts,
+  loadAllContracts,
   loadContract,
   saveContract,
-  type ContractMeta,
-} from "@/lib/contracts-store";
+} from "@/lib/server-contracts-store";
+import { migrateContractsToServer } from "@/lib/migrate-to-server";
+import { downloadJson } from "@/lib/backup";
 import { YasmenView } from "@/components/contracts/yasmen-view";
 import { MarginView } from "@/components/contracts/margin-view";
 
@@ -469,11 +472,28 @@ export function ContractsClient() {
   React.useEffect(() => {
     let active = true;
     (async () => {
+      // One-time, non-destructive copy of any old browser-local contracts up to
+      // the server, so a PC change no longer loses them. Safe to run every load
+      // (guarded internally); the local copy is never deleted.
+      try {
+        const copied = await migrateContractsToServer();
+        if (active && copied > 0) {
+          toast.success(
+            `Moved ${copied} saved contract${copied === 1 ? "" : "s"} to the cloud — safe now if you change PC.`,
+          );
+        }
+      } catch {
+        if (active) {
+          toast.warning(
+            "Couldn't sync local contracts to the cloud yet — will retry. Your local copy is safe.",
+          );
+        }
+      }
       try {
         const list = await listContracts();
         if (active) setSaved(list);
       } catch {
-        // Local storage unavailable — saving just won't be offered.
+        // Server unavailable — saving/listing just won't be offered right now.
       }
     })();
     return () => {
@@ -704,7 +724,7 @@ export function ContractsClient() {
       });
       setCurrentId(id);
       await refreshSaved();
-      toast.success("Saved to this PC");
+      toast.success("Saved to the cloud");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't save");
     } finally {
@@ -746,6 +766,26 @@ export function ContractsClient() {
       toast.error(e instanceof Error ? e.message : "Couldn't open that contract");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Download a full JSON backup of every saved contract (with rows), for an
+  // offline copy independent of browser and server.
+  const [backingUp, setBackingUp] = React.useState(false);
+  const downloadBackup = async () => {
+    setBackingUp(true);
+    try {
+      const contracts = await loadAllContracts();
+      downloadJson("contracts-backup", {
+        exportedAt: new Date().toISOString(),
+        kind: "contracts",
+        contracts,
+      });
+      toast.success(`Backed up ${contracts.length} contract(s) to a file.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't build the backup");
+    } finally {
+      setBackingUp(false);
     }
   };
 
@@ -901,9 +941,25 @@ export function ContractsClient() {
       {/* Saved contracts */}
       {saved.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-3">
-          <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-            <Clock className="size-4 text-muted-foreground" />
-            Saved contracts ({saved.length})
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Clock className="size-4 text-muted-foreground" />
+              Saved contracts ({saved.length})
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={downloadBackup}
+              disabled={backingUp}
+              title="Download a JSON backup of every saved contract"
+            >
+              {backingUp ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Download />
+              )}
+              Backup
+            </Button>
           </div>
           <ul className="divide-y divide-border/60">
             {saved.map((c) => (
@@ -966,7 +1022,7 @@ export function ContractsClient() {
             </span>
             <Button onClick={save} disabled={saving}>
               {saving ? <Loader2 className="animate-spin" /> : <Save />}
-              {currentId ? "Update saved" : "Save to PC"}
+              {currentId ? "Update saved" : "Save to cloud"}
             </Button>
           </div>
 

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 
-import { hasFullAccess } from "@/lib/access";
 import { connectDB } from "@/lib/db";
-import { AyaState } from "@/lib/models/AyaState";
+import { ReviewState } from "@/lib/models/ReviewState";
 
 export const runtime = "nodejs";
 
@@ -17,28 +17,31 @@ type CodeMeta = {
 
 const isEmptyMeta = (m: CodeMeta) => !m.status && !m.category && !m.note;
 
-async function loadMap(): Promise<Record<string, CodeMeta>> {
-  const rec = await AyaState.findOne({ key: CODES_KEY }).lean<{
-    data: Record<string, CodeMeta> | null;
-  } | null>();
+async function loadMap(userId: string): Promise<Record<string, CodeMeta>> {
+  const rec = await ReviewState.findOne({
+    ownerId: userId,
+    key: CODES_KEY,
+  }).lean<{ data: Record<string, CodeMeta> | null } | null>();
   return rec?.data ?? {};
 }
 
-// GET /api/aya/codes — the shared cross-sheet code history map.
+// GET /api/review/codes — this user's cross-sheet code history map.
 export async function GET() {
-  if (!(await hasFullAccess())) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   await connectDB();
-  return NextResponse.json({ codes: await loadMap() });
+  return NextResponse.json({ codes: await loadMap(userId) });
 }
 
-// POST /api/aya/codes — field-merge per-code updates into the history.
+// POST /api/review/codes — field-merge per-code updates into the history.
 // Body: { updates: Record<string, CodeMeta | null> } — null (or an entry that
 // ends up empty) removes that code. This mirrors mergeCodeStatuses on the client.
 export async function POST(request: Request) {
-  if (!(await hasFullAccess())) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const body = await request.json().catch(() => null);
   const updates = body?.updates as Record<string, CodeMeta | null> | undefined;
@@ -47,7 +50,7 @@ export async function POST(request: Request) {
   }
 
   await connectDB();
-  const map = await loadMap();
+  const map = await loadMap(userId);
   for (const [code, update] of Object.entries(updates)) {
     if (update === null) {
       delete map[code];
@@ -57,20 +60,21 @@ export async function POST(request: Request) {
     if (isEmptyMeta(merged)) delete map[code];
     else map[code] = merged;
   }
-  await AyaState.updateOne(
-    { key: CODES_KEY },
+  await ReviewState.updateOne(
+    { ownerId: userId, key: CODES_KEY },
     { $set: { data: map } },
     { upsert: true },
   );
   return NextResponse.json({ ok: true });
 }
 
-// DELETE /api/aya/codes — wipe the entire code history (fresh baseline).
+// DELETE /api/review/codes — wipe the entire code history (fresh baseline).
 export async function DELETE() {
-  if (!(await hasFullAccess())) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   await connectDB();
-  await AyaState.deleteOne({ key: CODES_KEY });
+  await ReviewState.deleteOne({ ownerId: userId, key: CODES_KEY });
   return NextResponse.json({ ok: true });
 }

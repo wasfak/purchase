@@ -793,6 +793,29 @@ export function ExpiryClient() {
 
   return (
     <div className="space-y-5">
+      {/* Choose the month FIRST — the uploaded report is filed under it on save. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+        <label
+          htmlFor="expiry-month"
+          className="flex items-center gap-2 text-sm font-semibold"
+        >
+          <Calendar className="size-4 text-muted-foreground" />
+          Report month
+        </label>
+        <input
+          id="expiry-month"
+          type="month"
+          value={saveMonth}
+          onChange={(e) => setSaveMonth(e.target.value || currentMonthStr())}
+          className="h-9 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+          title="Choose the month this expiry report is for, before uploading"
+        />
+        <span className="text-xs text-muted-foreground">
+          Pick the month before uploading — the report is filed under{" "}
+          <b className="text-foreground">{monthLabel(saveMonth)}</b> when you save.
+        </span>
+      </div>
+
       {/* Upload zone */}
       <div
         onDragOver={(e) => e.preventDefault()}
@@ -818,7 +841,9 @@ export function ExpiryClient() {
         <div className="rounded-full bg-muted p-3">
           <AlarmClock className="size-6 text-primary" />
         </div>
-        <p className="font-medium">Expiry report files</p>
+        <p className="font-medium">
+          Expiry report files for {monthLabel(saveMonth)}
+        </p>
         <p className="text-sm text-muted-foreground">
           Click or drag one or more .htm / .html files
         </p>
@@ -947,18 +972,14 @@ export function ExpiryClient() {
                   {hideDone ? <Check /> : <Clock />}
                   Hide done
                 </Button>
-                <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <span
+                  className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
+                  title="Set the month at the top of the page"
+                >
                   <Calendar className="size-4" />
-                  <input
-                    type="month"
-                    value={saveMonth}
-                    onChange={(e) =>
-                      setSaveMonth(e.target.value || currentMonthStr())
-                    }
-                    className="h-8 rounded-lg border border-border bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
-                    title="Which month this snapshot is filed under"
-                  />
-                </label>
+                  Filing under{" "}
+                  <b className="text-foreground">{monthLabel(saveMonth)}</b>
+                </span>
                 <Button
                   size="sm"
                   onClick={saveToOrders}

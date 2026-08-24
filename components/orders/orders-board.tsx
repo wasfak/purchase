@@ -231,63 +231,75 @@ function monthFromOrder(o: Order): string {
   return m ? m[1] : "";
 }
 
+const daysInMonth = (y: number, m0: number) => new Date(y, m0 + 1, 0).getDate();
+
+// The order day is stored as a full "YYYY-MM-DD" date — the real calendar day the
+// order is due — so an order carried onto the September sheet can still be due on
+// e.g. 28/8. Legacy rows that hold a bare day number (1–31) fall back to that day
+// within the order's own month, so old data keeps working. Only the day-of-month
+// is ever shown in the table; the month rides along invisibly (and on hover).
+function dueDateOf(order: Order): Date | null {
+  const raw = (order.orderDay ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, mo, d] = raw.split("-").map(Number);
+    return new Date(y, mo - 1, d);
+  }
+  const day = parseInt(raw, 10);
+  if (!day || day < 1 || day > 31) return null;
+  const m = (order.month ?? "").trim();
+  if (!/^\d{4}-\d{2}$/.test(m)) return null;
+  const [year, mo] = m.split("-").map(Number);
+  return new Date(year, mo - 1, Math.min(day, daysInMonth(year, mo - 1)));
+}
+
+// The day-of-month to show for an order day value (a full date or a legacy
+// number). The month is deliberately not shown — the table looks unchanged.
 function displayDay(v: string): string {
-  const n = parseInt(v, 10);
+  const raw = (v ?? "").trim();
+  const m = raw.match(/^\d{4}-\d{2}-(\d{2})$/);
+  const n = m ? parseInt(m[1], 10) : parseInt(raw, 10);
   if (!n || n < 1 || n > 31) return "";
   return `Day ${n}`;
 }
 
-// How many days past the monthly order day before we flag it as overdue.
-const OVERDUE_GRACE_DAYS = 3;
-
-// An order is "done" for the month once its date of doing is filled. It's
-// overdue when that's still empty and today is more than OVERDUE_GRACE_DAYS
-// past that order's due date — the order day within its OWN month (`month` is
-// "YYYY-MM"). Measuring against the order's month, not today's calendar month,
-// is what keeps a freshly-started future month from showing up red before its
-// day has actually arrived.
-function isOverdue(order: Order, month: string): boolean {
-  const day = parseInt(order.orderDay ?? "", 10);
-  if (!day || day < 1 || day > 31) return false;
-  if ((order.dateOfDoing ?? "").trim()) return false; // already done
-  if (!/^\d{4}-\d{2}$/.test(month)) return false;
-
-  const [year, mo] = month.split("-").map(Number);
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const lastOfMonth = new Date(year, mo, 0).getDate();
-  const due = new Date(year, mo - 1, Math.min(day, lastOfMonth));
-  const diffDays = (now.getTime() - due.getTime()) / 86_400_000;
-  return diffDays > OVERDUE_GRACE_DAYS;
+// The value to seed the order-day date picker with when editing a row (converts
+// a legacy day-number into a real date in the order's month so it isn't blank).
+function orderDayInputValue(order: Order): string {
+  const d = dueDateOf(order);
+  return d ? toDateStr(d) : "";
 }
 
-// How many days ahead of the order day counts as "due soon".
-const DUE_SOON_DAYS = 4;
+// How many days past the due date before we flag it as overdue.
+const OVERDUE_GRACE_DAYS = 3;
 
-// An order is "due soon" when it's not done and its order day, in the current
-// real month, is either coming up within DUE_SOON_DAYS or has already passed.
-// Keeping a passed-but-not-done day amber is deliberate: an order whose day was
-// the 20th still shows on the 23rd so you can catch the ones you skipped or
-// forgot, rather than it silently rolling to next month. It's measured against
-// today's actual date — not the month sheet being viewed — so pre-starting next
-// month's sheet still lights up an order whose day is coming up this week. Once
-// it's more than OVERDUE_GRACE_DAYS past, isOverdue turns the row red instead.
-function isDueSoon(order: Order): boolean {
-  if (isNoNeed(order)) return false; // nothing to do this month
-  const day = parseInt(order.orderDay ?? "", 10);
-  if (!day || day < 1 || day > 31) return false;
+// An order is "done" once its date of doing is filled. It's overdue when that's
+// still empty and today is more than OVERDUE_GRACE_DAYS past its explicit due
+// date — so a September order due 28/9 won't go red until late September, while
+// an August order due 28/8 goes red in early September.
+function isOverdue(order: Order): boolean {
   if ((order.dateOfDoing ?? "").trim()) return false; // already done
-
+  const due = dueDateOf(order);
+  if (!due) return false;
   const now = new Date();
   now.setHours(0, 0, 0, 0);
-  // The order day in the current real month (clamped to the last day for short
-  // months). No roll-forward: a day that's already passed gives a negative
-  // daysUntil, which stays within the window and keeps the row amber.
-  const clampDay = (y: number, m: number) =>
-    Math.min(day, new Date(y, m + 1, 0).getDate());
-  const due = new Date(now.getFullYear(), now.getMonth(), clampDay(now.getFullYear(), now.getMonth()));
-  const daysUntil = (due.getTime() - now.getTime()) / 86_400_000;
-  return daysUntil <= DUE_SOON_DAYS;
+  return (now.getTime() - due.getTime()) / 86_400_000 > OVERDUE_GRACE_DAYS;
+}
+
+// How many days ahead of the due date counts as "due soon".
+const DUE_SOON_DAYS = 4;
+
+// An order is "due soon" (amber) when it's not done and its explicit due date is
+// within DUE_SOON_DAYS ahead — or already past (skipped, not done). Because the
+// due date is a real date, ممفيس due 28/8 lights up on the 24th while الكسير due
+// 25/9 stays quiet, no matter which month sheet each row sits on.
+function isDueSoon(order: Order): boolean {
+  if (isNoNeed(order)) return false; // nothing to do this month
+  if ((order.dateOfDoing ?? "").trim()) return false; // already done
+  const due = dueDateOf(order);
+  if (!due) return false;
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return (due.getTime() - now.getTime()) / 86_400_000 <= DUE_SOON_DAYS;
 }
 
 // An order is done once its date of doing is filled — that's what turns the row
@@ -331,6 +343,12 @@ function isImportant(order: Order): boolean {
   return (order.important ?? "").trim().toLowerCase() === "yes";
 }
 
+// No order day has been filled in for this company yet — the "No order date"
+// filter surfaces these so you can spot companies still missing a scheduled day.
+function hasNoOrderDay(order: Order): boolean {
+  return (order.orderDay ?? "").trim() === "";
+}
+
 // The row filters applied on top of the selected month. Multiple can be active
 // at once — a row must satisfy every selected filter (AND) to be shown.
 type OrderFilter =
@@ -340,6 +358,7 @@ type OrderFilter =
   | "important"
   | "dueSoon"
   | "reviewDue"
+  | "noOrderDay"
   | "hideFinished";
 
 // The pickable filters, in display order, each with a label and its predicate.
@@ -354,6 +373,7 @@ const FILTER_OPTIONS: {
   { value: "important", label: "Important", test: isImportant },
   { value: "dueSoon", label: "Due soon", test: isDueSoon },
   { value: "reviewDue", label: "Review tasfya", test: isReviewDue },
+  { value: "noOrderDay", label: "No order date", test: hasNoOrderDay },
   { value: "hideFinished", label: "Hide finished", test: (o) => !isFinished(o) },
 ];
 
@@ -382,8 +402,13 @@ function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode 
   }
   if (col.type === "day") {
     if (!raw) return <span className="text-muted-foreground">—</span>;
+    // Show only the day; reveal the full date (with month) on hover.
+    const isFullDate = /^\d{4}-\d{2}-\d{2}$/.test(raw.trim());
     return (
-      <span className={cn(overdue && "font-semibold text-destructive")}>
+      <span
+        className={cn(overdue && "font-semibold text-destructive")}
+        title={isFullDate ? displayDate(raw) : undefined}
+      >
         {displayDay(raw)}
         {overdue && " · overdue"}
       </span>
@@ -411,8 +436,9 @@ function parseExcel(file: File): Promise<Record<string, string>[]> {
         if (!field) continue;
         let val = row[rawKey];
         if (val instanceof Date) {
-          // A spreadsheet date in the "order day" column means the day number.
-          val = field === "orderDay" ? val.getDate() : toDateStr(val);
+          // Both the order day and the date columns keep the full date now
+          // (the order day is displayed as just the day-of-month).
+          val = toDateStr(val);
         }
         out[field] = String(val ?? "").trim();
       }
@@ -472,6 +498,7 @@ export function OrdersBoard() {
     return currentMonthStr();
   });
   const [carrying, setCarrying] = React.useState(false);
+  const [fixingDates, setFixingDates] = React.useState(false);
   const [filing, setFiling] = React.useState(false);
 
   // The store-wide stock file (رصيد المخزن), saved on THIS PC (IndexedDB), not
@@ -782,9 +809,24 @@ export function OrdersBoard() {
       const key = o.companyName.trim().toLowerCase();
       if (!key || already.has(key) || seen.has(key)) continue;
       seen.add(key);
+      // Advance the due date by one month for the new cycle (keeping the same
+      // day). Legacy day-numbers with no usable date are copied as-is.
+      const src = dueDateOf(o);
+      const nextOrderDay = src
+        ? toDateStr(
+            new Date(
+              src.getFullYear(),
+              src.getMonth() + 1,
+              Math.min(
+                src.getDate(),
+                daysInMonth(src.getFullYear(), src.getMonth() + 1),
+              ),
+            ),
+          )
+        : (o.orderDay ?? "");
       toCreate.push({
         companyName: o.companyName,
-        orderDay: o.orderDay ?? "",
+        orderDay: nextOrderDay,
         important: o.important ?? "",
         month,
       });
@@ -814,6 +856,86 @@ export function OrdersBoard() {
       toast.error("Couldn't carry over orders");
     } finally {
       setCarrying(false);
+    }
+  }
+
+  // One-time bridge for older data: give each not-yet-done order a REAL due date
+  // (so the new date-based "due soon" works), derived from the company's last
+  // actual order + 1 month — e.g. ممفيس last done 28/7 → 28/8, الكسير last done
+  // 25/8 → 25/9. Orders that already hold a full date, or that have no usable
+  // day/history, are left untouched. Safe to re-run.
+  async function setDatesFromHistory() {
+    // Company → its most recent dateOfDoing (YYYY-MM-DD sorts lexically).
+    const lastDone = new Map<string, string>();
+    for (const o of orders) {
+      const key = o.companyName?.trim().toLowerCase();
+      const d = (o.dateOfDoing ?? "").trim();
+      if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+      const cur = lastDone.get(key);
+      if (!cur || d > cur) lastDone.set(key, d);
+    }
+
+    const updates: { id: string; orderDay: string }[] = [];
+    for (const o of orders) {
+      const raw = (o.orderDay ?? "").trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) continue; // already a real date
+      if ((o.dateOfDoing ?? "").trim()) continue; // done rows don't need it
+      const day = parseInt(raw, 10);
+
+      let target: Date | null = null;
+      const ld = lastDone.get(o.companyName?.trim().toLowerCase() ?? "");
+      if (ld) {
+        // Next order = one month after the last order, on the order day (or the
+        // last order's own day when no order day is set).
+        const [ly, lm] = ld.split("-").map(Number);
+        const d = day && day >= 1 && day <= 31 ? day : Number(ld.slice(8, 10));
+        target = new Date(ly, lm, Math.min(d, daysInMonth(ly, lm)));
+      } else if (day && day >= 1 && day <= 31) {
+        // No history — fall back to the day in the order's own month.
+        const m = (o.month ?? "").trim();
+        if (/^\d{4}-\d{2}$/.test(m)) {
+          const [y, mo] = m.split("-").map(Number);
+          target = new Date(y, mo - 1, Math.min(day, daysInMonth(y, mo - 1)));
+        }
+      }
+      if (target) updates.push({ id: o._id, orderDay: toDateStr(target) });
+    }
+
+    if (updates.length === 0) {
+      toast.info("Nothing to set — every order already has a date.");
+      return;
+    }
+
+    setFixingDates(true);
+    try {
+      // Optimistic: apply locally so the board updates immediately.
+      const byId = new Map(updates.map((u) => [u.id, u.orderDay]));
+      setOrders((prev) =>
+        prev.map((o) =>
+          byId.has(o._id) ? { ...o, orderDay: byId.get(o._id)! } : o,
+        ),
+      );
+      const results = await Promise.all(
+        updates.map((u) =>
+          fetch(`/api/orders/${u.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ orderDay: u.orderDay }),
+          }).then((r) => r.ok),
+        ),
+      );
+      const failed = results.filter((ok) => !ok).length;
+      if (failed > 0) {
+        toast.warning(`Set ${updates.length - failed}, ${failed} failed.`);
+        await load();
+      } else {
+        toast.success(`Set real dates on ${updates.length} order(s).`);
+      }
+    } catch {
+      toast.error("Couldn't set the dates.");
+      await load();
+    } finally {
+      setFixingDates(false);
     }
   }
 
@@ -1159,6 +1281,16 @@ export function OrdersBoard() {
           Carry over from {monthLabel(carrySourceMonth)}
         </Button>
       )}
+      <Button
+        type="button"
+        variant="outline"
+        disabled={fixingDates}
+        onClick={setDatesFromHistory}
+        title="One-time: give older orders a real due date from their last order + 1 month"
+      >
+        {fixingDates ? <Loader2 className="animate-spin" /> : <Calendar />}
+        Set dates from history
+      </Button>
     </div>
   );
 
@@ -1214,10 +1346,7 @@ export function OrdersBoard() {
               />
             ) : col.type === "day" ? (
               <input
-                type="number"
-                min={1}
-                max={31}
-                placeholder="1–31"
+                type="date"
                 value={form[col.key]}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, [col.key]: e.target.value }))
@@ -1349,7 +1478,7 @@ export function OrdersBoard() {
               <tbody>
                 {displayedOrders.map((order) => {
                   const busy = busyIds.has(order._id);
-                  const overdue = isOverdue(order, effectiveMonth(order));
+                  const overdue = isOverdue(order);
                   const dueSoon = isDueSoon(order);
                   const done = isDone(order);
                   const finished = isFinished(order);
@@ -1417,15 +1546,13 @@ export function OrdersBoard() {
                               ) : col.type === "day" ? (
                                 <input
                                   autoFocus
-                                  type="number"
-                                  min={1}
-                                  max={31}
-                                  defaultValue={raw}
+                                  type="date"
+                                  defaultValue={orderDayInputValue(order)}
                                   onBlur={(e) =>
                                     onCellBlur(order._id, col.key, e.target.value)
                                   }
                                   onKeyDown={(e) => onCellKeyDown(e, false)}
-                                  className="h-8 w-full min-w-[6rem] rounded border border-ring bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                                  className="h-8 w-full min-w-[8rem] rounded border border-ring bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                                 />
                               ) : (
                                 <input

@@ -9,6 +9,7 @@ export function ReviewAyaClient() {
       store={ayaReviewStore}
       showOrders={false}
       showStatusColumns={false}
+      prefsKey="review-aya"
     />
   );
 }
