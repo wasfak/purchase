@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown } from "lucide-react";
+import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -794,6 +794,40 @@ export function OrdersBoard() {
     }
   }
 
+  // Export the orders currently shown (this month, after filters + search) to an
+  // Excel sheet, one column per field, using the same labels as the table. Dates
+  // are shown the way the table shows them (order day as just the day number).
+  function exportExcel() {
+    if (displayedOrders.length === 0) {
+      toast.error("No orders to export.");
+      return;
+    }
+    const rows = displayedOrders.map((o) => {
+      const row: Record<string, string> = {};
+      for (const col of COLUMNS) {
+        const raw = o[col.key] ?? "";
+        row[col.label] =
+          col.type === "day"
+            ? displayDay(raw)
+            : col.type === "date"
+              ? displayDate(raw)
+              : raw;
+      }
+      return row;
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = COLUMNS.map((col) => {
+      const width = rows.reduce(
+        (max, r) => Math.max(max, (r[col.label] ?? "").length),
+        col.label.length,
+      );
+      return { wch: Math.min(Math.max(width + 2, 8), 48) };
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Orders");
+    XLSX.writeFile(wb, `orders-${month}.xlsx`);
+  }
+
   // Start the selected month fresh: copy each company (and its order day) from
   // the most recent earlier month, with all the per-month fields cleared.
   // Companies already present in this month are skipped, so it's safe to re-run.
@@ -1118,6 +1152,15 @@ export function OrdersBoard() {
         className="hidden"
         onChange={onPickFile}
       />
+
+      <Button
+        type="button"
+        variant="outline"
+        onClick={exportExcel}
+        title="Download the orders shown (this month, after filters) as an Excel sheet"
+      >
+        <Download /> Export Excel
+      </Button>
 
       <Button
         type="button"
