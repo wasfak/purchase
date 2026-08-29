@@ -17,7 +17,9 @@ type NavIcon =
   | "contracts"
   | "expiry"
   | "autotasfya"
-  | "zerocodes";
+  | "zerocodes"
+  | "taqfeelat"
+  | "ordersreview";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
@@ -49,6 +51,18 @@ export default async function RootLayout({
             ]
           : []),
         { value: "orders", label: "Orders", href: "/orders", icon: "orders" },
+        {
+          value: "taqfeelat",
+          label: "تقفيلات",
+          href: "/taqfeelat",
+          icon: "taqfeelat",
+        },
+        {
+          value: "orders-review",
+          label: "مراجعة اوردرات",
+          href: "/orders-review",
+          icon: "ordersreview",
+        },
         { value: "review", label: "Review", href: "/review", icon: "review" },
         { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
         { value: "expiry", label: "Expiry", href: "/expiry", icon: "expiry" },

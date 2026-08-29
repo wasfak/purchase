@@ -14,10 +14,19 @@ function displayDate(v: string): string {
   return v;
 }
 
+// The order's due day-of-month. `orderDay` is either a full "YYYY-MM-DD" date
+// (current model) or a legacy bare day-number (1–31). Returns null otherwise.
+function orderDayNumber(v: string): number | null {
+  const raw = (v ?? "").trim();
+  const m = /^\d{4}-\d{2}-(\d{2})$/.exec(raw);
+  const n = m ? parseInt(m[1], 10) : parseInt(raw, 10);
+  if (!n || n < 1 || n > 31) return null;
+  return n;
+}
+
 function displayDay(v: string): string {
-  const n = parseInt(v, 10);
-  if (!n || n < 1 || n > 31) return "";
-  return `Day ${n}`;
+  const n = orderDayNumber(v);
+  return n === null ? "" : `Day ${n}`;
 }
 
 // Days between when the order was handled (Date of doing) — or today, if it's
@@ -27,8 +36,8 @@ function computeDelayDays(
   orderDay: string,
   dateOfDoing: string,
 ): number | null {
-  const day = parseInt(orderDay, 10);
-  if (!day || day < 1 || day > 31) return null;
+  const day = orderDayNumber(orderDay);
+  if (day === null) return null;
   const ref = dateOfDoing ? new Date(`${dateOfDoing}T00:00:00`) : new Date();
   if (Number.isNaN(ref.getTime())) return null;
   ref.setHours(0, 0, 0, 0);

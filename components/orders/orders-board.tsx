@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown } from "lucide-react";
+import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -447,8 +447,9 @@ function parseExcel(file: File): Promise<Record<string, string>[]> {
   });
 }
 
-export function OrdersBoard() {
+export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
   const [orders, setOrders] = React.useState<Order[]>([]);
+  const [resetting, setResetting] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   // Saved expiry snapshot, for the per-company popup.
   const [expiryItems, setExpiryItems] = React.useState<ExpiryRow[]>([]);
@@ -457,6 +458,16 @@ export function OrdersBoard() {
   const [companiesWithNotes, setCompaniesWithNotes] = React.useState<
     Set<string>
   >(new Set());
+  // Normalized company keys marked "auto display" on the تقفيلات page. Used to
+  // reflect that toggle here as a read-only column.
+  const [taqfeelatKeys, setTaqfeelatKeys] = React.useState<Set<string>>(
+    new Set(),
+  );
+  // Subset of the above whose "date of doing" is filled on the تقفيلات page —
+  // these show a green (done) badge instead of amber.
+  const [taqfeelatDoneKeys, setTaqfeelatDoneKeys] = React.useState<Set<string>>(
+    new Set(),
+  );
   const [openExpiry, setOpenExpiry] = React.useState<string | null>(null);
   const [flyingSearch, setFlyingSearch] = React.useState(false);
   const today = React.useMemo(() => new Date(), []);
@@ -717,6 +728,39 @@ export function OrdersBoard() {
     };
   }, []);
 
+  // Load the تقفيلات auto-display flags so the board can flag those companies.
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/taqfeelat");
+        if (!res.ok) return;
+        const data = await res.json();
+        const keys = new Set<string>();
+        const doneKeys = new Set<string>();
+        for (const f of (data.flags ?? []) as {
+          key?: string;
+          autoDisplay?: boolean;
+          dateOfDoing?: string;
+        }[]) {
+          if (f.autoDisplay && f.key) {
+            keys.add(f.key);
+            if ((f.dateOfDoing ?? "").trim()) doneKeys.add(f.key);
+          }
+        }
+        if (active) {
+          setTaqfeelatKeys(keys);
+          setTaqfeelatDoneKeys(doneKeys);
+        }
+      } catch {
+        // No flags endpoint — just don't flag anything.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // Expiry items grouped by normalized company name.
   const expiryByCompany = React.useMemo(() => {
     const m = new Map<string, ExpiryRow[]>();
@@ -791,6 +835,30 @@ export function OrdersBoard() {
     } finally {
       setImporting(false);
       if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  // Admin-only: wipe every OTHER user's orders (all months) so the system can be
+  // handed to new users with a clean slate. The admin's own orders are kept.
+  async function resetOtherUsers() {
+    if (
+      !window.confirm(
+        "Delete ALL orders belonging to other users (every month)?\n\n" +
+          "Your own orders are kept. This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    setResetting(true);
+    try {
+      const res = await fetch("/api/orders/reset", { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      toast.success(`Deleted ${data.deleted} order(s) from other users`);
+    } catch {
+      toast.error("Couldn't reset other users' orders");
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -1334,6 +1402,19 @@ export function OrdersBoard() {
         {fixingDates ? <Loader2 className="animate-spin" /> : <Calendar />}
         Set dates from history
       </Button>
+
+      {isAdmin && (
+        <Button
+          type="button"
+          variant="destructive"
+          disabled={resetting}
+          onClick={resetOtherUsers}
+          title="Admin only: delete every other user's orders (all months) so new users start fresh. Your own orders are kept."
+        >
+          {resetting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+          Reset other users
+        </Button>
+      )}
     </div>
   );
 
@@ -1503,6 +1584,9 @@ export function OrdersBoard() {
                       {col.label}
                     </th>
                   ))}
+                  <th className="whitespace-nowrap px-3 py-2.5 text-center font-semibold text-muted-foreground">
+                    تقفيلات
+                  </th>
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
                     Review
                   </th>
@@ -1650,6 +1734,45 @@ export function OrdersBoard() {
                           </td>
                         );
                       })}
+                      <td className="px-3 py-2 align-top text-center whitespace-nowrap">
+                        {(() => {
+                          const key = normalizeCompany(order.companyName ?? "");
+                          if (!taqfeelatKeys.has(key))
+                            return <span className="text-muted-foreground">—</span>;
+                          // تقفيله already made (date of doing set on تقفيلات page).
+                          if (taqfeelatDoneKeys.has(key))
+                            return (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border border-emerald-500/50 bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+                                title="تقفيله done — date of doing is set"
+                              >
+                                <Check className="size-3" />
+                                On
+                              </span>
+                            );
+                          // Order itself is done but no تقفيله yet — remind to make one.
+                          if (done)
+                            return (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border border-destructive/50 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive"
+                                title="Order done but no تقفيله yet — set its date of doing on the تقفيلات page"
+                              >
+                                <AlarmClock className="size-3" />
+                                Pending
+                              </span>
+                            );
+                          // Marked, order not done yet.
+                          return (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+                              title="Marked for auto-display on the تقفيلات page"
+                            >
+                              <Star className="size-3 fill-current" />
+                              On
+                            </span>
+                          );
+                        })()}
+                      </td>
                       <td className="px-3 py-2 align-top whitespace-nowrap">
                         <ReviewCell
                           order={order}

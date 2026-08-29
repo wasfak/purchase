@@ -68,3 +68,21 @@ export async function hasFullAccess(): Promise<boolean> {
 export async function requireFullAccess(): Promise<void> {
   if (!(await hasFullAccess())) redirect("/contracts");
 }
+
+// Super-admin emails allowed to run destructive, cross-user maintenance (e.g.
+// wiping every other user's orders to hand the system to new users). Configure
+// as a comma-separated list in ADMIN_EMAILS. Keep this list tiny.
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ?? "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+export function isAdminEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return ADMIN_EMAILS.includes(email.toLowerCase());
+}
+
+/** Whether the signed-in user is a super-admin. */
+export async function currentUserIsAdmin(): Promise<boolean> {
+  return isAdminEmail(await currentUserEmail());
+}

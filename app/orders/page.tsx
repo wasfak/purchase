@@ -1,8 +1,9 @@
 import { OrdersBoard } from "@/components/orders/orders-board";
-import { requireFullAccess } from "@/lib/access";
+import { requireFullAccess, currentUserIsAdmin } from "@/lib/access";
 
 export default async function Page() {
   await requireFullAccess();
+  const isAdmin = await currentUserIsAdmin();
   return (
     <main className="w-full space-y-5 px-4 py-6">
       <div className="border-b pb-3">
@@ -12,7 +13,7 @@ export default async function Page() {
           listed below.
         </p>
       </div>
-      <OrdersBoard />
+      <OrdersBoard isAdmin={isAdmin} />
     </main>
   );
 }
