@@ -1137,16 +1137,20 @@ export function ReviewWorkspace({
     const exportCols = columns.filter(
       (c) => !exclude.includes(normalizeHeader(c)),
     );
-    const NOTE_COL = "Note";
-    const header = [...exportCols, CATEGORY_COL, NOTE_COL];
+    const header = [...exportCols];
+    // Export only the rows currently shown: always drop ignored, and honor the
+    // active "Hide done" / "no need" filters so the sheet matches the table.
     const data = rows
       .map((r, i) => ({ r, i }))
-      .filter(({ i }) => !ignored.has(String(i)))
-      .map(({ r, i }) => {
+      .filter(
+        ({ i }) =>
+          !ignored.has(String(i)) &&
+          (!hideDone || !completed.has(String(i))) &&
+          (!hideNoNeed || category.get(String(i)) !== "no need"),
+      )
+      .map(({ r }) => {
         const obj: Record<string, Cell> = {};
         for (const c of exportCols) obj[c] = r[c] ?? null;
-        obj[CATEGORY_COL] = category.get(String(i)) ?? null;
-        obj[NOTE_COL] = note.get(String(i)) ?? null;
         return obj;
       });
 
