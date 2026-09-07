@@ -85,6 +85,9 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
       const code = r[CONTRACT_COLUMNS.code];
       const supplier = (r[CONTRACT_COLUMNS.supplier] ?? "").trim();
       if (!code || !supplier) continue;
+      // Ignore bonus/free lines (بونص — أساسي = 100%) so their quantity doesn't
+      // inflate the summed كمية الوارد.
+      if (num(r[CONTRACT_COLUMNS.basic]) === 100) continue;
       if (quarter !== "all") {
         const dm = /\d{4}\/(\d{2})\/\d{2}/.exec(r[CONTRACT_COLUMNS.date] ?? "");
         if (!dm) continue;

@@ -142,6 +142,11 @@ const SENT_WINDOW_DAYS = 7;
 // already ordered can never quietly come back as un-ordered and get re-ordered.
 const REAPPEAR_WINDOW_DAYS = 5;
 
+// A carried-over mark/note this old (its Status date is this many days or more
+// before the new upload) is treated as expired: the code comes back completely
+// fresh — no done/ignored status, no category, no note — as if never seen.
+const STALE_MARK_DAYS = 5;
+
 // Present a stored "YYYY-MM-DD" date (as used by the Orders tab) in the local
 // locale format; anything that isn't that shape is shown as-is.
 const displayDate = (v: string): string =>
@@ -845,6 +850,14 @@ export function ReviewWorkspace({
             const meta = history[normCode(r[codeKey])];
             if (!meta) return;
             const id = String(i);
+            // Expire stale marks: if the code was last marked STALE_MARK_DAYS or
+            // more days ago, drop everything (status, category, note) and let it
+            // come back as a brand-new, unmarked row.
+            if (
+              meta.at != null &&
+              daysSince(meta.at, uploadedNow) >= STALE_MARK_DAYS
+            )
+              return;
             if (meta.status === "done") {
               // An ordered item ALWAYS stays marked done — no matter how soon it
               // reappears — so it can never quietly come back as un-ordered and
