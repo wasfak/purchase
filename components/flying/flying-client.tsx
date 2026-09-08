@@ -16,6 +16,7 @@ import {
   StickyNote,
   Download,
   ArrowDownWideNarrow,
+  Check,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ import {
   fmtBalance,
 } from "@/lib/tasfya/flying";
 
-type Column = { id: string; name: string };
+type Column = { id: string; name: string; sent?: boolean };
 type Row = {
   code: string;
   name: string;
@@ -374,9 +375,6 @@ export function FlyingClient() {
   const [rows, setRows] = React.useState<Row[]>([]);
   const [filters, setFilters] = React.useState<Record<string, Set<string>>>({});
   const [negativeOnly, setNegativeOnly] = React.useState(false);
-  const [activeSupplier, setActiveSupplier] = React.useState<string | null>(
-    null,
-  );
 
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -405,6 +403,7 @@ export function FlyingClient() {
             (sheet.columns ?? []).map((c: Column) => ({
               id: c.id,
               name: c.name ?? "",
+              sent: Boolean(c.sent),
             })),
           );
           setRows(
@@ -656,30 +655,26 @@ export function FlyingClient() {
         .filter(
           ({ row }) =>
             passes(row) &&
-            (!negativeOnly || effRemaining(row, columns) < 0) &&
-            (!activeSupplier ||
-              parseCell(row.cells[activeSupplier]).base +
-                parseCell(row.cells[activeSupplier]).bounce >
-                0),
+            (!negativeOnly || effRemaining(row, columns) < 0),
         ),
-    [rows, passes, negativeOnly, columns, activeSupplier],
+    [rows, passes, negativeOnly, columns],
   );
 
-  const anyFilter =
-    Object.keys(filters).length > 0 || negativeOnly || activeSupplier != null;
+  const anyFilter = Object.keys(filters).length > 0 || negativeOnly;
 
-  // Suppliers = the named distributor columns; used for the quick filter chips.
+  // Suppliers = the named distributor columns; shown as chips you tick off to
+  // remember which distributor you've already sent this order to.
   const suppliers = React.useMemo(
     () => columns.filter((c) => c.name.trim().length > 0),
     [columns],
   );
 
-  // Drop the active supplier chip if its column was renamed away or removed.
-  React.useEffect(() => {
-    if (activeSupplier && !columns.some((c) => c.id === activeSupplier)) {
-      setActiveSupplier(null);
-    }
-  }, [columns, activeSupplier]);
+  function toggleSent(id: string) {
+    setColumns((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, sent: !c.sent } : c)),
+    );
+    setDirty(true);
+  }
 
   // Export the currently visible rows to an .xlsx: code, name, الباقى.
   async function exportExcel() {
@@ -822,7 +817,6 @@ export function FlyingClient() {
                 onClick={() => {
                   setFilters({});
                   setNegativeOnly(false);
-                  setActiveSupplier(null);
                 }}
               >
                 <X className="size-4" /> Clear filters
@@ -859,53 +853,29 @@ export function FlyingClient() {
           {suppliers.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-medium text-muted-foreground">
-                الموزعين:
+                الموزعين المُرسل إليهم:
               </span>
-              {suppliers.map((s) => {
-                const isActive = activeSupplier === s.id;
-                const count = rows.reduce((n, r) => {
-                  const { base, bounce } = parseCell(r.cells[s.id]);
-                  return base + bounce > 0 ? n + 1 : n;
-                }, 0);
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() =>
-                      setActiveSupplier((cur) => (cur === s.id ? null : s.id))
-                    }
-                    title={`عرض الأصناف المرسلة إلى ${s.name}`}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                      isActive
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-card text-foreground hover:border-primary/50 hover:bg-muted",
-                    )}
-                  >
-                    <span dir="auto">{s.name}</span>
-                    <span
-                      className={cn(
-                        "rounded-full px-1.5 text-[10px] tabular-nums",
-                        isActive
-                          ? "bg-primary-foreground/20"
-                          : "bg-muted text-muted-foreground",
-                      )}
-                    >
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-              {activeSupplier && (
-                <Button
+              {suppliers.map((s) => (
+                <button
+                  key={s.id}
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setActiveSupplier(null)}
+                  onClick={() => toggleSent(s.id)}
+                  title={
+                    s.sent
+                      ? `تم الإرسال إلى ${s.name} — اضغط للتراجع`
+                      : `اضغط لتحديد أنك أرسلت إلى ${s.name}`
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    s.sent
+                      ? "border-emerald-500 bg-emerald-500 text-white shadow-sm hover:bg-emerald-600"
+                      : "border-border bg-card text-foreground hover:border-emerald-500/50 hover:bg-muted",
+                  )}
                 >
-                  <X className="size-4" /> عرض الكل
-                </Button>
-              )}
+                  {s.sent && <Check className="size-3.5" />}
+                  <span dir="auto">{s.name}</span>
+                </button>
+              ))}
             </div>
           )}
 

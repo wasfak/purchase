@@ -51,6 +51,7 @@ export async function POST(request: Request) {
         .map((c: Record<string, unknown>) => ({
           id: String(c?.id ?? ""),
           name: String(c?.name ?? ""),
+          sent: Boolean(c?.sent),
         }))
         .filter((c: { id: string }) => c.id)
     : [];

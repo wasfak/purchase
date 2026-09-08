@@ -13,6 +13,9 @@ const FlyingColumnSchema = new Schema(
     // Stable id so renaming a column never disturbs the cell data keyed to it.
     id: { type: String, required: true },
     name: { type: String, default: "" },
+    // Marked true once the user has sent this order to the distributor;
+    // drives the "sent" chip color so they remember who's been sent to.
+    sent: { type: Boolean, default: false },
   },
   { _id: false },
 );
