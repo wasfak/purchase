@@ -209,7 +209,7 @@ export function RunClient() {
   // code when the user clicks a code cell. `null` until loaded; the map is empty
   // when there is no saved sheet.
   const [flying, setFlying] = React.useState<{
-    columns: FlyingColumn[];
+    columns: (FlyingColumn & { sent?: boolean })[];
     byCode: Map<string, FlyingRow>;
   } | null>(null);
 
@@ -233,6 +233,14 @@ export function RunClient() {
   const [supplierCells, setSupplierCells] = React.useState<
     Record<string, Record<string, string>>
   >({});
+  // "ع الطاير لم يصل": show only items still short (التسوية < 0) that a
+  // distributor promised on the flying sheet (has a value there) — i.e. promised
+  // but not yet arrived, so you can resend to the distributor.
+  const [flyingShortOnly, setFlyingShortOnly] = React.useState(false);
+  // Within "ع الطاير لم يصل", narrow to items a specific distributor promised
+  // ("" = any distributor). Options are the flying-sheet distributors, with the
+  // ones marked "sent" flagged.
+  const [distFilter, setDistFilter] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [savedAt, setSavedAt] = React.useState<string | null>(null);
 
@@ -356,9 +364,13 @@ export function RunClient() {
         if (!res.ok) throw new Error();
         const data = await res.json();
         const sheet = data.sheet;
-        const columns: FlyingColumn[] = (sheet?.columns ?? []).map(
-          (c: FlyingColumn) => ({ id: c.id, name: c.name ?? "" }),
-        );
+        const columns: (FlyingColumn & { sent?: boolean })[] = (
+          sheet?.columns ?? []
+        ).map((c: FlyingColumn & { sent?: boolean }) => ({
+          id: c.id,
+          name: c.name ?? "",
+          sent: Boolean(c.sent),
+        }));
         const byCode = new Map<string, FlyingRow>();
         for (const r of sheet?.rows ?? []) {
           const row: FlyingRow = {
@@ -464,6 +476,26 @@ export function RunClient() {
       return supplierAdjusted(code, base);
     },
     [edits, supplierAdjusted],
+  );
+
+  // Whether a code carries a promised value on the flying sheet: for a specific
+  // distributor (colId) that column's base > 0, otherwise any distributor's.
+  const hasFlyingPromise = React.useCallback(
+    (code: string, colId?: string) => {
+      const r = flying?.byCode.get(code.trim());
+      if (!r) return false;
+      if (colId) return parseCell(r.cells[colId]).base > 0;
+      return (flying?.columns ?? []).some((c) => parseCell(r.cells[c.id]).base > 0);
+    },
+    [flying],
+  );
+
+  // "ع الطاير لم يصل": still short AND promised on the flying sheet — optionally
+  // by the distributor picked in distFilter.
+  const isFlyingShort = React.useCallback(
+    (code: string, tasfya: number) =>
+      tasfya < 0 && hasFlyingPromise(code, distFilter || undefined),
+    [hasFlyingPromise, distFilter],
   );
 
   // All rows (ordered + extras), with the edited settlement applied to `tasfya`
@@ -584,6 +616,11 @@ export function RunClient() {
     [scopedRows],
   );
 
+  const flyingShortCount = React.useMemo(
+    () => scopedRows.filter((r) => isFlyingShort(r.code, r.tasfya)).length,
+    [scopedRows, isFlyingShort],
+  );
+
   const visibleRows = React.useMemo(() => {
     let out =
       settle.size === 0
@@ -592,6 +629,8 @@ export function RunClient() {
     if (flyingOnly) out = out.filter((r) => isCoveredOnFlying(r.code, r.tasfya));
     if (unmarkedOnly)
       out = out.filter((r) => isUnmarkedShort(r.tasfya, r.name));
+    if (flyingShortOnly)
+      out = out.filter((r) => isFlyingShort(r.code, r.tasfya));
     if (sort) {
       const col = colByKey[sort.col];
       out = [...out].sort((a, b) => {
@@ -610,6 +649,8 @@ export function RunClient() {
     settle,
     flyingOnly,
     unmarkedOnly,
+    flyingShortOnly,
+    isFlyingShort,
     isCoveredOnFlying,
     sort,
     colByKey,
@@ -659,6 +700,8 @@ export function RunClient() {
     setSettle(new Set());
     setFlyingOnly(false);
     setUnmarkedOnly(false);
+    setFlyingShortOnly(false);
+    setDistFilter("");
     setShowHidden(false);
   };
 
@@ -803,6 +846,7 @@ export function RunClient() {
     settle.size +
     (flyingOnly ? 1 : 0) +
     (unmarkedOnly ? 1 : 0) +
+    (flyingShortOnly ? 1 : 0) +
     (showHidden ? 1 : 0);
 
   return (
@@ -896,6 +940,46 @@ export function RunClient() {
             >
               <Plane className="size-3.5" /> ع الطاير {flyingCount}
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                setFlyingShortOnly((v) => {
+                  if (v) setDistFilter("");
+                  return !v;
+                })
+              }
+              aria-pressed={flyingShortOnly}
+              title="أصناف لها قيمة في تصفية ع الطاير (وعد بها موزّع) ولم تصل بعد (التسوية سالبة) — لإعادة إرسالها"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-shadow",
+                "bg-orange-500/15 text-orange-700 dark:text-orange-400 ring-orange-500",
+                flyingShortOnly
+                  ? "ring-2 ring-offset-1 ring-offset-background"
+                  : "opacity-90 hover:opacity-100",
+              )}
+            >
+              <Plane className="size-3.5" /> ع الطاير لم يصل {flyingShortCount}
+            </button>
+            {flyingShortOnly &&
+              flying &&
+              flying.columns.some((c) => c.name.trim()) && (
+                <select
+                  value={distFilter}
+                  onChange={(e) => setDistFilter(e.target.value)}
+                  dir="auto"
+                  title="فلترة حسب الموزّع الذي أرسلت إليه (✓ = تم الإرسال في تصفية ع الطاير)"
+                  className="h-8 rounded-lg border border-orange-500/40 bg-orange-500/10 px-2 text-sm text-orange-800 outline-none focus-visible:ring-2 focus-visible:ring-orange-400/40 dark:text-orange-300"
+                >
+                  <option value="">كل الموزّعين</option>
+                  {flying.columns
+                    .filter((c) => c.name.trim())
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {(c.sent ? "✓ " : "") + c.name.trim()}
+                      </option>
+                    ))}
+                </select>
+              )}
             <button
               type="button"
               onClick={() => setUnmarkedOnly((v) => !v)}
