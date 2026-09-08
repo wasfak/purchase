@@ -374,6 +374,9 @@ export function FlyingClient() {
   const [rows, setRows] = React.useState<Row[]>([]);
   const [filters, setFilters] = React.useState<Record<string, Set<string>>>({});
   const [negativeOnly, setNegativeOnly] = React.useState(false);
+  const [activeSupplier, setActiveSupplier] = React.useState<string | null>(
+    null,
+  );
 
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -653,12 +656,30 @@ export function FlyingClient() {
         .filter(
           ({ row }) =>
             passes(row) &&
-            (!negativeOnly || effRemaining(row, columns) < 0),
+            (!negativeOnly || effRemaining(row, columns) < 0) &&
+            (!activeSupplier ||
+              parseCell(row.cells[activeSupplier]).base +
+                parseCell(row.cells[activeSupplier]).bounce >
+                0),
         ),
-    [rows, passes, negativeOnly, columns],
+    [rows, passes, negativeOnly, columns, activeSupplier],
   );
 
-  const anyFilter = Object.keys(filters).length > 0 || negativeOnly;
+  const anyFilter =
+    Object.keys(filters).length > 0 || negativeOnly || activeSupplier != null;
+
+  // Suppliers = the named distributor columns; used for the quick filter chips.
+  const suppliers = React.useMemo(
+    () => columns.filter((c) => c.name.trim().length > 0),
+    [columns],
+  );
+
+  // Drop the active supplier chip if its column was renamed away or removed.
+  React.useEffect(() => {
+    if (activeSupplier && !columns.some((c) => c.id === activeSupplier)) {
+      setActiveSupplier(null);
+    }
+  }, [columns, activeSupplier]);
 
   // Export the currently visible rows to an .xlsx: code, name, الباقى.
   async function exportExcel() {
@@ -801,6 +822,7 @@ export function FlyingClient() {
                 onClick={() => {
                   setFilters({});
                   setNegativeOnly(false);
+                  setActiveSupplier(null);
                 }}
               >
                 <X className="size-4" /> Clear filters
@@ -833,6 +855,59 @@ export function FlyingClient() {
               <Plus className="size-4" /> Add distributor
             </Button>
           </div>
+
+          {suppliers.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                الموزعين:
+              </span>
+              {suppliers.map((s) => {
+                const isActive = activeSupplier === s.id;
+                const count = rows.reduce((n, r) => {
+                  const { base, bounce } = parseCell(r.cells[s.id]);
+                  return base + bounce > 0 ? n + 1 : n;
+                }, 0);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() =>
+                      setActiveSupplier((cur) => (cur === s.id ? null : s.id))
+                    }
+                    title={`عرض الأصناف المرسلة إلى ${s.name}`}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                      isActive
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-card text-foreground hover:border-primary/50 hover:bg-muted",
+                    )}
+                  >
+                    <span dir="auto">{s.name}</span>
+                    <span
+                      className={cn(
+                        "rounded-full px-1.5 text-[10px] tabular-nums",
+                        isActive
+                          ? "bg-primary-foreground/20"
+                          : "bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+              {activeSupplier && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setActiveSupplier(null)}
+                >
+                  <X className="size-4" /> عرض الكل
+                </Button>
+              )}
+            </div>
+          )}
 
           <div className="max-h-[75vh] overflow-auto rounded-md border border-border shadow-sm">
             <table className="w-full border-collapse text-sm [&_td]:border [&_td]:border-border [&_th]:border [&_th]:border-border">
