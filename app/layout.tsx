@@ -19,7 +19,8 @@ type NavIcon =
   | "autotasfya"
   | "zerocodes"
   | "taqfeelat"
-  | "ordersreview";
+  | "ordersreview"
+  | "alama";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
@@ -71,6 +72,12 @@ export default async function RootLayout({
           label: "Auto Tasfya",
           href: "/auto-tasfya",
           icon: "autotasfya",
+        },
+        {
+          value: "alama",
+          label: "علامة",
+          href: "/alama",
+          icon: "alama",
         },
         {
           value: "zero-codes",

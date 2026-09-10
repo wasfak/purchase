@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star } from "lucide-react";
+import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -383,6 +383,23 @@ function isReviewDue(order: Order): boolean {
   return reviewStatus(order).state === "due";
 }
 
+// Columns the table can be sorted by, both date-valued.
+type SortKey = "orderDay" | "dateOfDoing";
+const SORTABLE_KEYS = new Set<SortKey>(["orderDay", "dateOfDoing"]);
+
+// A comparable timestamp for a sortable column, or null when the order has no
+// usable value there (nulls always sort to the bottom, regardless of direction).
+// Order day understands both a real date and a legacy day-number (via dueDateOf).
+function sortValueOf(order: Order, key: SortKey): number | null {
+  if (key === "orderDay") {
+    const d = dueDateOf(order);
+    return d ? d.getTime() : null;
+  }
+  const v = (order.dateOfDoing ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+  return new Date(`${v}T00:00:00`).getTime();
+}
+
 // The read-only display node for a cell, with a dash fallback when empty.
 function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
   if (col.type === "yesno") {
@@ -479,6 +496,11 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
   // Narrows the table. Empty set = show all; otherwise a row must pass every
   // selected filter. Lets you combine e.g. "Important" + "Due soon".
   const [filters, setFilters] = React.useState<Set<OrderFilter>>(new Set());
+  // Optional sort on a date column (Order day / Date of doing). Clicking a
+  // sortable header cycles asc → desc → off. null = natural (insertion) order.
+  const [sort, setSort] = React.useState<{ key: SortKey; dir: "asc" | "desc" } | null>(
+    null,
+  );
   // Whether the "Show" multi-select dropdown is open.
   const [filterMenuOpen, setFilterMenuOpen] = React.useState(false);
   const filterMenuRef = React.useRef<HTMLDivElement>(null);
@@ -584,8 +606,29 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         (o.companyName ?? "").toLowerCase().includes(q),
       );
     }
+    if (sort) {
+      // Stable sort; orders with no value in the sorted column go to the bottom
+      // in both directions, so blanks never crowd the top.
+      const factor = sort.dir === "asc" ? 1 : -1;
+      rows = [...rows].sort((a, b) => {
+        const va = sortValueOf(a, sort.key);
+        const vb = sortValueOf(b, sort.key);
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        return (va - vb) * factor;
+      });
+    }
     return rows;
-  }, [visibleOrders, filters, search]);
+  }, [visibleOrders, filters, search, sort]);
+
+  // Cycle a sortable column: asc → desc → off (back to natural order).
+  const toggleSort = (key: SortKey) =>
+    setSort((prev) => {
+      if (!prev || prev.key !== key) return { key, dir: "asc" };
+      if (prev.dir === "asc") return { key, dir: "desc" };
+      return null;
+    });
 
   // The newest month (other than the one selected) that actually has orders —
   // the source we offer to carry companies over from into a fresh month.
@@ -1576,14 +1619,46 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {COLUMNS.map((col) => (
-                    <th
-                      key={col.key}
-                      className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground"
-                    >
-                      {col.label}
-                    </th>
-                  ))}
+                  {COLUMNS.map((col) => {
+                    const sortable = SORTABLE_KEYS.has(col.key as SortKey);
+                    const activeSort = sort?.key === col.key ? sort.dir : null;
+                    return (
+                      <th
+                        key={col.key}
+                        className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground"
+                        aria-sort={
+                          activeSort
+                            ? activeSort === "asc"
+                              ? "ascending"
+                              : "descending"
+                            : undefined
+                        }
+                      >
+                        {sortable ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleSort(col.key as SortKey)}
+                            className={cn(
+                              "-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:text-foreground",
+                              activeSort && "text-foreground",
+                            )}
+                            title={`Sort by ${col.label}`}
+                          >
+                            {col.label}
+                            {activeSort === "asc" ? (
+                              <ArrowUp className="size-3.5" />
+                            ) : activeSort === "desc" ? (
+                              <ArrowDown className="size-3.5" />
+                            ) : (
+                              <ArrowUpDown className="size-3.5 opacity-40" />
+                            )}
+                          </button>
+                        ) : (
+                          col.label
+                        )}
+                      </th>
+                    );
+                  })}
                   <th className="whitespace-nowrap px-3 py-2.5 text-center font-semibold text-muted-foreground">
                     تقفيلات
                   </th>

@@ -17,6 +17,7 @@ import {
   Hash,
   ClipboardList,
   FileSpreadsheet,
+  Tag,
 } from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
@@ -35,7 +36,8 @@ type IconName =
   | "autotasfya"
   | "zerocodes"
   | "taqfeelat"
-  | "ordersreview";
+  | "ordersreview"
+  | "alama";
 
 type Item = {
   value: string;
@@ -103,6 +105,7 @@ export function NotchNav({
     zerocodes: Hash,
     taqfeelat: ClipboardList,
     ordersreview: FileSpreadsheet,
+    alama: Tag,
   };
 
   const updateNotch = React.useCallback(() => {
