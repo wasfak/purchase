@@ -18,6 +18,7 @@ import {
   ClipboardList,
   FileSpreadsheet,
   Tag,
+  BarChart3,
 } from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
@@ -37,7 +38,8 @@ type IconName =
   | "zerocodes"
   | "taqfeelat"
   | "ordersreview"
-  | "alama";
+  | "alama"
+  | "analytics";
 
 type Item = {
   value: string;
@@ -106,6 +108,7 @@ export function NotchNav({
     taqfeelat: ClipboardList,
     ordersreview: FileSpreadsheet,
     alama: Tag,
+    analytics: BarChart3,
   };
 
   const updateNotch = React.useCallback(() => {

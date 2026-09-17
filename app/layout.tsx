@@ -20,7 +20,8 @@ type NavIcon =
   | "zerocodes"
   | "taqfeelat"
   | "ordersreview"
-  | "alama";
+  | "alama"
+  | "analytics";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
@@ -84,6 +85,12 @@ export default async function RootLayout({
           label: "0 codes",
           href: "/zero-codes",
           icon: "zerocodes",
+        },
+        {
+          value: "analytics",
+          label: "Analytics",
+          href: "/analytics",
+          icon: "analytics",
         },
       ]
     : [
