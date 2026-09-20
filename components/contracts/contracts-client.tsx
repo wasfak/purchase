@@ -678,29 +678,44 @@ export function ContractsClient() {
     }
   }, []);
 
-  const setStock = React.useCallback(async (file: File) => {
-    if (!isHtml(file)) {
-      setError("Please choose a .htm or .html stock file.");
+  const addStockFiles = React.useCallback(async (files: File[]) => {
+    const htmls = files.filter(isHtml);
+    if (htmls.length === 0) {
+      setError("Please choose .htm or .html stock files.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const codes = extractStockCodes(await file.text());
-      setStockCodes(codes);
-      setStockFileName(file.name);
+      const merged = new Set<string>();
+      const names: string[] = [];
+      for (const file of htmls) {
+        const codes = extractStockCodes(await file.text());
+        if (codes.length === 0) {
+          toast.warning(`No item codes were detected in ${file.name}`);
+        }
+        for (const c of codes) merged.add(c);
+        names.push(file.name);
+      }
+      const allCodes = Array.from(merged);
+      setStockCodes(allCodes);
+      setStockFileName(
+        names.length === 1 ? names[0] : `${names.length} files`,
+      );
       setCurrentId(null);
       setSavedInfo(null);
       setExcludedSuppliers(new Set());
       setExcludedCodes(new Set());
       setShowQuarters(false);
-      if (codes.length === 0) {
-        toast.warning("No item codes were detected in the stock file.");
+      if (allCodes.length === 0) {
+        toast.warning("No item codes were detected in the stock file(s).");
       } else {
-        toast.success(`Detected ${codes.length} stock codes`);
+        toast.success(
+          `Detected ${allCodes.length} stock codes from ${htmls.length} file${htmls.length === 1 ? "" : "s"}`,
+        );
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read the stock file.");
+      setError(e instanceof Error ? e.message : "Could not read a stock file.");
     } finally {
       setBusy(false);
     }
@@ -890,8 +905,8 @@ export function ContractsClient() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
-            const file = e.dataTransfer.files?.[0];
-            if (file) setStock(file);
+            const files = Array.from(e.dataTransfer.files ?? []);
+            if (files.length) addStockFiles(files);
           }}
           onClick={() => stockInputRef.current?.click()}
           className={cn(
@@ -905,18 +920,19 @@ export function ContractsClient() {
             ref={stockInputRef}
             type="file"
             accept={HTML_ACCEPT}
+            multiple
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) setStock(file);
+              const files = Array.from(e.target.files ?? []);
+              if (files.length) addStockFiles(files);
             }}
           />
           <div className="rounded-full bg-muted p-3">
             <Boxes className="size-6 text-primary" />
           </div>
-          <p className="font-medium">Stock file</p>
+          <p className="font-medium">Stock file(s)</p>
           <p className="text-sm text-muted-foreground">
-            Click or drag a .htm / .html file of item codes
+            Click or drag one or more .htm / .html files of item codes
           </p>
           {stockFileName && (
             <p className="text-xs text-muted-foreground">

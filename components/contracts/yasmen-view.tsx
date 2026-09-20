@@ -495,6 +495,7 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
               return (
                 <label
                   key={c.code}
+                  dir="ltr"
                   className={cn(
                     "flex cursor-pointer items-center gap-3 px-3 py-1.5 text-sm transition-colors hover:bg-muted/50",
                     isOn && "bg-primary/5",
@@ -509,7 +510,7 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
                   <span className="w-20 shrink-0 tabular-nums text-muted-foreground">
                     {c.code}
                   </span>
-                  <span className="min-w-0 flex-1 truncate" dir="auto">
+                  <span className="min-w-0 flex-1 truncate text-left" dir="auto">
                     {c.product || "—"}
                   </span>
                 </label>
