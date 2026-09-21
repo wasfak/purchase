@@ -416,8 +416,13 @@ export type SupplierMargin = {
   creditMonths: number;
   /** creditMonths × monthlyRate — margin from deferred payment. */
   creditPct: number;
-  /** avgDiscountPct + bonusPct + creditPct — the headline margin figure. */
-  marginPct: number;
+  /**
+   * Headline figure: profit ÷ retail value on one monetary base — folds
+   * discount + بونص + آجل together. See {@link netMargin}. Ranks suppliers.
+   */
+  netMarginPct: number;
+  /** Profit in EGP = retail value of all units − effective (post-آجل) spend. */
+  profitValue: number;
   /** Distinct item codes bought from this supplier. */
   items: number;
 };
@@ -426,12 +431,18 @@ export type ItemSupplierMargin = {
   supplier: string;
   paidUnits: number;
   spend: number;
+  /** Retail (سعر الجمهور) value of the paid units — Σ qty × سعر الجمهور. */
+  retailPaid: number;
   avgDiscountPct: number;
   bonusUnits: number;
   bonusPct: number;
+  bonusValue: number;
   creditMonths: number;
   creditPct: number;
-  marginPct: number;
+  /** Profit ÷ retail on one monetary base — folds discount + بونص + آجل. */
+  netMarginPct: number;
+  /** Profit in EGP from this supplier for this item. */
+  profitValue: number;
 };
 
 export type ItemMargin = {
@@ -451,6 +462,7 @@ type MarginAccum = {
   paidUnits: number;
   spend: number;
   discWeighted: number; // Σ discount% × lineValue
+  retailPaid: number; // Σ lineValue ÷ keptFraction — retail (سعر الجمهور) value of paid units
   bonusUnits: number;
 };
 
@@ -458,26 +470,55 @@ const newAccum = (): MarginAccum => ({
   paidUnits: 0,
   spend: 0,
   discWeighted: 0,
+  retailPaid: 0,
   bonusUnits: 0,
 });
 
 function finishAccum(a: MarginAccum): {
   paidUnits: number;
   spend: number;
+  retailPaid: number;
   avgDiscountPct: number;
   bonusUnits: number;
   bonusPct: number;
-  marginPct: number;
 } {
   const avgDiscountPct = a.spend > 0 ? a.discWeighted / a.spend : 0;
   const bonusPct = a.paidUnits > 0 ? (a.bonusUnits / a.paidUnits) * 100 : 0;
   return {
     paidUnits: round2(a.paidUnits),
     spend: round2(a.spend),
+    retailPaid: round2(a.retailPaid),
     avgDiscountPct: round2(avgDiscountPct),
     bonusUnits: round2(a.bonusUnits),
     bonusPct: round2(bonusPct),
-    marginPct: round2(avgDiscountPct + bonusPct),
+  };
+}
+
+/**
+ * The financially-sound headline figures, on ONE monetary base so all four
+ * levers (base/extra/special discount, بونص, and آجل) are directly comparable:
+ *
+ *   قيمة بيعية (retail) = سعر الجمهور × (paid units + bonus units)
+ *   صافي المدفوع        = spend × (1 − credit%)   ← آجل time value
+ *   ربح (EGP)           = retail − صافي المدفوع   ← discount$ + bonus$ + credit$
+ *   صافي الهامش %       = ربح ÷ retail × 100
+ *
+ * With no bonus and no credit this reduces to the value-weighted discount off
+ * سعر الجمهور, so it generalises the old figure instead of contradicting it.
+ */
+function netMargin(
+  spend: number,
+  retailPaid: number,
+  bonusValue: number,
+  creditPct: number,
+): { netMarginPct: number; profitValue: number } {
+  const retailAll = retailPaid + bonusValue;
+  const effectivePaid = spend * (1 - creditPct / 100);
+  const profitValue = retailAll - effectivePaid;
+  const netMarginPct = retailAll > 0 ? (profitValue / retailAll) * 100 : 0;
+  return {
+    netMarginPct: round2(netMarginPct),
+    profitValue: round2(profitValue),
   };
 }
 
@@ -555,13 +596,19 @@ export function computeSupplierMargins(
     const publicPrice = keptFraction > 0 ? price / keptFraction : price;
     if (publicPrice > item.publicPrice) item.publicPrice = publicPrice;
 
+    // Retail (سعر الجمهور) value of this paid line — the denominator of the
+    // sound net-margin figure. Same as qty × publicPrice for the line.
+    const retailLine = keptFraction > 0 ? lineValue / keptFraction : lineValue;
+
     sAcc.paidUnits += qty;
     sAcc.spend += lineValue;
     sAcc.discWeighted += discountPct * lineValue;
+    sAcc.retailPaid += retailLine;
 
     iAcc.paidUnits += qty;
     iAcc.spend += lineValue;
     iAcc.discWeighted += discountPct * lineValue;
+    iAcc.retailPaid += retailLine;
   }
 
   // Bonus value (EGP) per supplier, summed across codes as we build byItem —
@@ -573,7 +620,7 @@ export function computeSupplierMargins(
       const publicPrice = e.publicPrice; // سعر الجمهور for this code
       const suppliers: ItemSupplierMargin[] = [...e.suppliers.entries()]
         .map(([supplier, a]) => {
-          const base = finishAccum(a);
+          const { retailPaid, ...base } = finishAccum(a);
           const creditMonths = monthsOf(supplier);
           const creditPct = creditPctOf(supplier);
           const bonusValue = round2(a.bonusUnits * publicPrice);
@@ -581,16 +628,24 @@ export function computeSupplierMargins(
             supplier,
             (supplierBonusValue.get(supplier) ?? 0) + bonusValue,
           );
+          const { netMarginPct, profitValue } = netMargin(
+            base.spend,
+            retailPaid,
+            bonusValue,
+            creditPct,
+          );
           return {
             supplier,
             ...base,
+            retailPaid,
             bonusValue,
             creditMonths,
             creditPct,
-            marginPct: round2(base.marginPct + creditPct),
+            netMarginPct,
+            profitValue,
           };
         })
-        .sort((x, y) => y.marginPct - x.marginPct);
+        .sort((x, y) => y.netMarginPct - x.netMarginPct);
       const spend = round2(suppliers.reduce((s, x) => s + x.spend, 0));
       // Only suppliers with paid volume can be "best"; bonus-only rows still
       // show in the breakdown but never win the code on their own.
@@ -598,7 +653,7 @@ export function computeSupplierMargins(
       const best = ranked[0] ?? null;
       const gap =
         ranked.length >= 2
-          ? round2(ranked[0].marginPct - ranked[1].marginPct)
+          ? round2(ranked[0].netMarginPct - ranked[1].netMarginPct)
           : 0;
       return { code, product: e.product, suppliers, best, gap, spend };
     })
@@ -607,20 +662,28 @@ export function computeSupplierMargins(
 
   const bySupplier: SupplierMargin[] = [...supplierMap.entries()]
     .map(([name, a]) => {
-      const base = finishAccum(a);
+      const { retailPaid, ...base } = finishAccum(a);
       const creditMonths = monthsOf(name);
       const creditPct = creditPctOf(name);
+      const bonusValue = round2(supplierBonusValue.get(name) ?? 0);
+      const { netMarginPct, profitValue } = netMargin(
+        base.spend,
+        retailPaid,
+        bonusValue,
+        creditPct,
+      );
       return {
         name,
         items: a.codes.size,
         ...base,
-        bonusValue: round2(supplierBonusValue.get(name) ?? 0),
+        bonusValue,
         creditMonths,
         creditPct,
-        marginPct: round2(base.marginPct + creditPct),
+        netMarginPct,
+        profitValue,
       };
     })
-    .sort((x, y) => y.marginPct - x.marginPct);
+    .sort((x, y) => y.netMarginPct - x.netMarginPct);
 
   return { bySupplier, byItem };
 }

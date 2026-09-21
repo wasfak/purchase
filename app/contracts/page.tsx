@@ -1,18 +1,14 @@
-import { ContractsClient } from "@/components/contracts/contracts-client";
+import { ContractsModes } from "@/components/contracts/contracts-modes";
+import { hasFullAccess } from "@/lib/access";
 
 // Contracts is the one page every signed-in user may use, so it carries no
-// full-access guard. Restricted users are redirected here from other pages.
-export default function Page() {
+// full-access guard. Full-access users additionally get the "Mr. Fahmy" sales
+// analysis via the mode chooser; restricted users see only the normal tool.
+export default async function Page() {
+  const showFahmy = await hasFullAccess();
   return (
-    <main className="mx-auto w-full max-w-[120rem] space-y-5 p-6">
-      <div className="border-b pb-3">
-        <h1 className="text-2xl font-bold tracking-tight">Contracts</h1>
-        <p className="text-sm text-muted-foreground">
-          Upload one or more purchase-invoice files, then a stock file. Purchase
-          lines are matched by item code and filtered to items found in stock.
-        </p>
-      </div>
-      <ContractsClient />
+    <main className="mx-auto w-full max-w-[120rem] p-6 pb-64">
+      <ContractsModes showFahmy={showFahmy} />
     </main>
   );
 }

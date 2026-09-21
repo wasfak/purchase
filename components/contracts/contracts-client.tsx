@@ -1064,7 +1064,7 @@ export function ContractsClient() {
               [
                 ["quarters", "Quarterly totals"],
                 ["lines", "Purchase lines"],
-                ["margin", "Margin"],
+                ["margin", "Best supplier"],
                 ["yasmen", "Yasmen mode"],
               ] as [View, string][]
             ).map(([v, label]) => (

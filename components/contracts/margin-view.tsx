@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Crown,
   Download,
+  Sparkles,
   X,
 } from "lucide-react";
 
@@ -168,7 +169,8 @@ export function MarginView({
         [`قيمة البونص (${CURRENCY})`]: s.bonusValue,
         "آجل (شهور)": s.creditMonths,
         "آجل %": s.creditPct,
-        "هامش الربح %": s.marginPct,
+        "صافي الهامش %": s.netMarginPct,
+        [`الربح (${CURRENCY})`]: s.profitValue,
         "وحدات مدفوعة": s.paidUnits,
         "وحدات بونص": s.bonusUnits,
         [`قيمة الشراء (${CURRENCY})`]: s.spend,
@@ -190,7 +192,8 @@ export function MarginView({
         "كود الصنف": it.code,
         "اسم الصنف": it.product,
         "أفضل مورد": it.best?.supplier ?? "",
-        "هامش الأفضل %": it.best?.marginPct ?? 0,
+        "صافي هامش الأفضل %": it.best?.netMarginPct ?? 0,
+        [`ربح الأفضل (${CURRENCY})`]: it.best?.profitValue ?? 0,
         "فارق عن التالي %": it.gap,
         "عدد الموردين": it.suppliers.filter((s) => s.paidUnits > 0).length,
         [`قيمة الصنف (${CURRENCY})`]: it.spend,
@@ -206,10 +209,14 @@ export function MarginView({
       {supplierFilter}
 
       <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        <b className="text-foreground">هامش الربح %</b> = متوسط الخصم (أساسي +
-        إضافي + خاص، مرجّح بقيمة الشراء) + نسبة البونص (وحدات مجانية ÷ وحدات
-        مدفوعة) + خصم الآجل (شهور السداد × {monthlyRate || 0}% شهرياً). المورد
-        الأعلى هامشاً يعطيك ربحاً أكبر على نفس الأصناف.
+        <b className="text-foreground">صافي الهامش %</b> = الربح ÷ القيمة البيعية،
+        محسوباً على أساس فلوسي واحد يجمع كل شيء:{" "}
+        <span className="text-foreground">القيمة البيعية</span> = سعر الجمهور ×
+        (وحدات مدفوعة + بونص)، و<span className="text-foreground">صافي المدفوع</span>{" "}
+        = قيمة الشراء × (١ − خصم الآجل)، وخصم الآجل = شهور السداد ×{" "}
+        {monthlyRate || 0}% شهرياً. <b className="text-foreground">الربح (فلوس)</b>{" "}
+        = القيمة البيعية − صافي المدفوع (خصومات + بونص + آجل بالجنيه). المورد
+        الأعلى صافي هامش يعطيك ربحاً أكبر على نفس الأصناف.
       </div>
 
       {/* Payment terms editor — months of credit per supplier + monthly rate. */}
@@ -250,11 +257,16 @@ export function MarginView({
       </div>
 
       {tab === "suppliers" ? (
-        <SupplierLeaderboard
-          suppliers={bySupplier}
-          onExport={exportSuppliers}
-          onClear={onClear}
-        />
+        <>
+          {bySupplier.length > 1 && (
+            <FairCompare a={bySupplier[0]} b={bySupplier[1]} />
+          )}
+          <SupplierLeaderboard
+            suppliers={bySupplier}
+            onExport={exportSuppliers}
+            onClear={onClear}
+          />
+        </>
       ) : (
         <ItemBestSupplier
           items={byItem}
@@ -382,6 +394,113 @@ function CreditEditor({
   );
 }
 
+// Fair comparison of the top two suppliers at an EQUAL purchase value, so the
+// leader on efficiency (profit per EGP spent) shows even when they buy small.
+function FairCompare({ a, b }: { a: SupplierMargin; b: SupplierMargin }) {
+  // Common basis: the larger of the two spends — a real figure from the data.
+  const commonSpend = Math.max(a.spend, b.spend);
+  const roi = (s: SupplierMargin) => (s.spend > 0 ? s.profitValue / s.spend : 0);
+  const profitAt = (s: SupplierMargin) => commonSpend * roi(s);
+  const pa = profitAt(a);
+  const pb = profitAt(b);
+  const winner = pa >= pb ? a : b;
+  const delta = Math.abs(pa - pb);
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border bg-card p-3" dir="rtl">
+      <div className="flex flex-wrap items-center gap-2">
+        <Sparkles className="size-4 text-primary" />
+        <span className="text-sm font-semibold">
+          لو قيمة الشراء متساوية بين أفضل موردين
+        </span>
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        عند قيمة شراء موحّدة ={" "}
+        <b className="text-foreground">{money(commonSpend)}</b> للاتنين — بنعزل
+        الكفاءة (الربح لكل جنيه) عن حجم الشراء، فيبان مين فعلاً أفضل صفقة.
+      </p>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <FairStat
+          name={a.name}
+          profit={money(pa)}
+          roi={pct(roi(a) * 100)}
+          margin={pct(a.netMarginPct)}
+          spend={money(a.spend)}
+          winner={winner.name === a.name}
+        />
+        <FairStat
+          name={b.name}
+          profit={money(pb)}
+          roi={pct(roi(b) * 100)}
+          margin={pct(b.netMarginPct)}
+          spend={money(b.spend)}
+          winner={winner.name === b.name}
+        />
+      </div>
+
+      {delta > 0 && (
+        <p className="text-center text-xs">
+          <span className="font-semibold text-primary" dir="auto">
+            {winner.name}
+          </span>{" "}
+          يربح أكتر بـ{" "}
+          <span className="font-bold text-primary tabular-nums">
+            {money(delta)}
+          </span>{" "}
+          عند نفس قيمة الشراء.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FairStat({
+  name,
+  profit,
+  roi,
+  margin,
+  spend,
+  winner,
+}: {
+  name: string;
+  profit: string;
+  roi: string;
+  margin: string;
+  spend: string;
+  winner: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3",
+        winner ? "border-primary/40 bg-primary/5" : "border-border bg-background",
+      )}
+    >
+      <div className="flex items-center gap-1.5">
+        {winner && <Crown className="size-3.5 text-primary" />}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium" dir="auto">
+          {name}
+        </span>
+      </div>
+      <div
+        className={cn(
+          "mt-1 text-xl font-bold tabular-nums",
+          winner ? "text-primary" : "text-foreground",
+        )}
+      >
+        {profit}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+        <span>ربح لكل جنيه {roi}</span>
+        <span>صافي هامش {margin}</span>
+        <span>قيمة شرائه الحالية {spend}</span>
+      </div>
+    </div>
+  );
+}
+
 function SupplierLeaderboard({
   suppliers,
   onExport,
@@ -391,12 +510,12 @@ function SupplierLeaderboard({
   onExport: () => void;
   onClear: () => void;
 }) {
-  const maxMargin = Math.max(...suppliers.map((s) => s.marginPct), 1);
+  const maxMargin = Math.max(...suppliers.map((s) => s.netMarginPct), 1);
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          {suppliers.length.toLocaleString()} مورد · مرتّبون حسب هامش الربح
+          {suppliers.length.toLocaleString()} مورد · مرتّبون حسب صافي الهامش
           الأعلى
         </p>
         <div className="flex gap-2">
@@ -418,7 +537,10 @@ function SupplierLeaderboard({
                 المورد
               </th>
               <th className="border-b border-border px-3 py-2 font-semibold">
-                هامش الربح %
+                صافي الهامش %
+              </th>
+              <th className="border-b border-border px-3 py-2 font-semibold">
+                الربح
               </th>
               <th className="border-b border-border px-3 py-2 font-semibold text-muted-foreground">
                 خصم %
@@ -458,13 +580,18 @@ function SupplierLeaderboard({
                     <div className="h-2 min-w-16 flex-1 overflow-hidden rounded-full bg-muted">
                       <div
                         className="h-full rounded-full bg-primary transition-[width] duration-500"
-                        style={{ width: `${(s.marginPct / maxMargin) * 100}%` }}
+                        style={{
+                          width: `${(s.netMarginPct / maxMargin) * 100}%`,
+                        }}
                       />
                     </div>
                     <span className="w-14 shrink-0 text-start tabular-nums font-semibold">
-                      {pct(s.marginPct)}
+                      {pct(s.netMarginPct)}
                     </span>
                   </div>
+                </td>
+                <td className="px-3 py-2 text-center align-middle tabular-nums font-medium text-primary">
+                  {money(s.profitValue)}
                 </td>
                 <td className="px-3 py-2 text-center align-middle tabular-nums text-muted-foreground">
                   {pct(s.avgDiscountPct)}
@@ -504,7 +631,7 @@ function SupplierLeaderboard({
             {suppliers.length === 0 && (
               <tr>
                 <td
-                  colSpan={8}
+                  colSpan={9}
                   className="px-3 py-10 text-center text-muted-foreground"
                 >
                   لا توجد بيانات للموردين المحددين.
@@ -535,8 +662,8 @@ function ItemBestSupplier({
     <>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          {items.length.toLocaleString()} صنف · أفضل مورد هامشاً لكل صنف، مرتّبة
-          حسب قيمة الصنف
+          {items.length.toLocaleString()} صنف · أفضل مورد صافي هامشاً لكل صنف،
+          مرتّبة حسب قيمة الصنف
         </p>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={onExport}>
@@ -563,7 +690,10 @@ function ItemBestSupplier({
                 أفضل مورد
               </th>
               <th className="border-b border-border px-3 py-2 font-semibold">
-                هامش %
+                صافي هامش %
+              </th>
+              <th className="border-b border-border px-3 py-2 font-semibold">
+                الربح
               </th>
               <th className="border-b border-border px-3 py-2 font-semibold text-muted-foreground">
                 فارق %
@@ -609,7 +739,10 @@ function ItemBestSupplier({
                       )}
                     </td>
                     <td className="px-3 py-2 text-center align-top tabular-nums font-semibold">
-                      {it.best ? pct(it.best.marginPct) : "—"}
+                      {it.best ? pct(it.best.netMarginPct) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-center align-top tabular-nums font-medium text-primary">
+                      {it.best ? money(it.best.profitValue) : "—"}
                     </td>
                     <td
                       className={cn(
@@ -624,7 +757,7 @@ function ItemBestSupplier({
                   </tr>
                   {open && (
                     <tr className="border-b border-border bg-muted/20">
-                      <td colSpan={6} className="p-3">
+                      <td colSpan={7} className="p-3">
                         <SupplierBreakdown suppliers={it.suppliers} />
                       </td>
                     </tr>
@@ -635,7 +768,7 @@ function ItemBestSupplier({
             {items.length === 0 && (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className="px-3 py-10 text-center text-muted-foreground"
                 >
                   لا توجد أصناف للموردين المحددين.
@@ -655,7 +788,8 @@ function SupplierBreakdown({ suppliers }: { suppliers: ItemSupplierMargin[] }) {
       <thead>
         <tr className="text-muted-foreground">
           <th className="px-2 py-1 text-start font-medium">المورد</th>
-          <th className="px-2 py-1 font-medium">هامش %</th>
+          <th className="px-2 py-1 font-medium">صافي هامش %</th>
+          <th className="px-2 py-1 font-medium">الربح</th>
           <th className="px-2 py-1 font-medium">خصم %</th>
           <th className="px-2 py-1 font-medium">بونص</th>
           <th className="px-2 py-1 font-medium">آجل %</th>
@@ -679,7 +813,10 @@ function SupplierBreakdown({ suppliers }: { suppliers: ItemSupplierMargin[] }) {
               {s.supplier}
             </td>
             <td className="px-2 py-1 text-center tabular-nums font-semibold">
-              {s.paidUnits > 0 ? pct(s.marginPct) : "بونص فقط"}
+              {s.paidUnits > 0 ? pct(s.netMarginPct) : "بونص فقط"}
+            </td>
+            <td className="px-2 py-1 text-center tabular-nums font-medium text-primary">
+              {s.paidUnits > 0 ? money(s.profitValue) : "—"}
             </td>
             <td className="px-2 py-1 text-center tabular-nums text-muted-foreground">
               {pct(s.avgDiscountPct)}

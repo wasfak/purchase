@@ -21,7 +21,8 @@ type NavIcon =
   | "taqfeelat"
   | "ordersreview"
   | "alama"
-  | "analytics";
+  | "analytics"
+  | "fahmy";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
