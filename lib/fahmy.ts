@@ -256,37 +256,63 @@ export function parseSalesItems(sales: SheetMatrix): SalesItem[] {
  * target (matched to a brand via {@link normalizeBrand}).
  */
 export function parseTargets(sales: SheetMatrix): TargetInfo {
-  let start = -1;
+  const none: TargetInfo = { mode: "none", rows: [], brandTargets: {} };
+
+  // Find the target header — any row whose label column mentions "TARGET".
+  // Covers "NET ANNUAL TARGET WITHOUT TAX (14%)" and
+  // "PURCHASE TARGET 2026 NET WITHOUT TAX 14%".
+  let headerIdx = -1;
   for (let i = 0; i < sales.length; i++) {
-    if (str(sales[i][1]).toUpperCase().includes("ANNUAL TARGET")) {
-      start = i + 1;
+    if (str(sales[i][1]).toUpperCase().includes("TARGET")) {
+      headerIdx = i;
       break;
     }
   }
+  if (headerIdx < 0) return none;
+
+  // Sub-rows below the header: SLAB1/2/3 (company) or brand names (per-brand),
+  // each carrying an annual figure in the last column.
   const rows: TargetSlab[] = [];
-  if (start >= 0) {
-    for (let i = start; i < sales.length; i++) {
-      const label = str(sales[i][1]);
-      const annual = num(sales[i][6]);
-      // A real target row has a label and a positive annual figure.
-      if (!label || annual <= 0) continue;
-      rows.push({
-        name: label.trim(),
-        q: [num(sales[i][2]), num(sales[i][3]), num(sales[i][4]), num(sales[i][5])],
-        annual,
-      });
+  for (let i = headerIdx + 1; i < sales.length; i++) {
+    const label = str(sales[i][1]);
+    const annual = num(sales[i][6]);
+    if (!label || annual <= 0) continue;
+    rows.push({
+      name: label.trim(),
+      q: [num(sales[i][2]), num(sales[i][3]), num(sales[i][4]), num(sales[i][5])],
+      annual,
+    });
+  }
+
+  // Single-total format: no sub-rows — the target value sits on the header row
+  // itself (e.g. "PURCHASE TARGET 2026 …" with 12,000,000 in the next cell).
+  if (rows.length === 0) {
+    const header = sales[headerIdx];
+    let annual = 0;
+    for (let ci = 2; ci <= 9; ci++) {
+      const v = num(header[ci]);
+      if (v > 0) {
+        annual = v;
+        break;
+      }
     }
+    if (annual <= 0) return none;
+    const yr = str(header[1]).match(/(20\d{2})/);
+    return {
+      mode: "company",
+      rows: [{ name: yr ? `Target ${yr[1]}` : "Target", q: [0, 0, 0, 0], annual }],
+      brandTargets: {},
+    };
   }
 
   const isSlab = (name: string) => /^slab\s*\d+$/i.test(name.replace(/\s+/g, " "));
-  const mode: TargetMode =
-    rows.length === 0 ? "none" : rows.some((r) => isSlab(r.name)) ? "company" : "brand";
+  const mode: TargetMode = rows.some((r) => isSlab(r.name)) ? "company" : "brand";
 
   const brandTargets: Record<string, number> = {};
   if (mode === "company") {
     // Normalise slab labels to "SLAB1" etc.
     for (const r of rows) r.name = r.name.replace(/\s+/g, "").toUpperCase();
-  } else if (mode === "brand") {
+  } else {
     for (const r of rows) brandTargets[normalizeBrand(r.name)] = r.annual;
   }
 
