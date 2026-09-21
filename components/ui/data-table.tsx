@@ -129,6 +129,7 @@ export function DataTable({
     col: string;
     x: number;
     y: number;
+    top: number;
   } | null>(null);
   const [valSearch, setValSearch] = React.useState("");
 
@@ -452,6 +453,7 @@ export function DataTable({
                                   col,
                                   x: Math.min(r.left, window.innerWidth - 272),
                                   y: r.bottom,
+                                  top: r.top,
                                 },
                           );
                         }}
@@ -671,12 +673,31 @@ export function DataTable({
       </div>
 
       {/* Excel-style filter dropdown */}
-      {menu && (
-        <div
-          data-col-filter
-          style={{ position: "fixed", top: menu.y + 4, left: menu.x }}
-          className="z-50 flex w-68 flex-col rounded-lg border border-border bg-card p-2 text-sm shadow-xl"
-        >
+      {menu &&
+        (() => {
+          // Flip the menu above the button when it would overflow the
+          // bottom of the viewport (and there is more room above), so the
+          // list and its footer buttons stay reachable.
+          const EST_HEIGHT = 380;
+          const spaceBelow =
+            (typeof window !== "undefined" ? window.innerHeight : 0) - menu.y;
+          const openUp = spaceBelow < EST_HEIGHT && menu.top > spaceBelow;
+          const posStyle: React.CSSProperties = openUp
+            ? {
+                position: "fixed",
+                bottom:
+                  (typeof window !== "undefined" ? window.innerHeight : 0) -
+                  menu.top +
+                  4,
+                left: menu.x,
+              }
+            : { position: "fixed", top: menu.y + 4, left: menu.x };
+          return (
+            <div
+              data-col-filter
+              style={posStyle}
+              className="z-50 flex max-h-[calc(100vh-1rem)] w-68 flex-col overflow-auto rounded-lg border border-border bg-card p-2 text-sm shadow-xl"
+            >
           <div className="flex gap-1 pb-2">
             <button
               type="button"
@@ -781,8 +802,9 @@ export function DataTable({
               <Check /> Done
             </Button>
           </div>
-        </div>
-      )}
+            </div>
+          );
+        })()}
     </>
   );
 }

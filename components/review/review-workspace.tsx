@@ -364,6 +364,9 @@ export function ReviewWorkspace({
   // place instead of creating a duplicate. Null for a fresh, unsaved upload.
   const [currentId, setCurrentId] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState<SavedDatasetMeta[]>([]);
+  // Collapse the saved-sheets list to just the latest one by default; the user
+  // expands it to reveal the full history.
+  const [showAllSheets, setShowAllSheets] = React.useState(false);
 
   // Bulk "mark done by pasting codes" panel.
   const [markOpen, setMarkOpen] = React.useState(false);
@@ -1824,7 +1827,7 @@ export function ReviewWorkspace({
             Saved sheets ({saved.length})
           </div>
           <ul className="divide-y divide-border/60">
-            {saved.map((d) => (
+            {(showAllSheets ? saved : saved.slice(0, 1)).map((d) => (
               <li
                 key={d.id}
                 className={cn(
@@ -1859,6 +1862,17 @@ export function ReviewWorkspace({
               </li>
             ))}
           </ul>
+          {saved.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setShowAllSheets((v) => !v)}
+              className="mt-2 w-full rounded-lg border border-border py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              {showAllSheets
+                ? "Hide older sheets"
+                : `Show all sheets (${saved.length})`}
+            </button>
+          )}
         </div>
       )}
 
