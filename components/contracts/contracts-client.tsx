@@ -893,10 +893,20 @@ export function ContractsClient() {
             Click or drag one or more .htm / .html files
           </p>
           {purchaseFiles.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {purchaseFiles.length} file{purchaseFiles.length === 1 ? "" : "s"} ·{" "}
-              {purchaseRows.length.toLocaleString()} lines
-            </p>
+            <div className="flex flex-col items-center gap-1 text-xs text-muted-foreground">
+              <p>
+                {purchaseFiles.length} file
+                {purchaseFiles.length === 1 ? "" : "s"} ·{" "}
+                {purchaseRows.length.toLocaleString()} lines
+              </p>
+              <ul className="max-w-full space-y-0.5">
+                {purchaseFiles.map((n, i) => (
+                  <li key={`${n}-${i}`} className="truncate">
+                    {n}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
 
