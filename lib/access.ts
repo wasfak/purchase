@@ -69,6 +69,33 @@ export async function requireFullAccess(): Promise<void> {
   if (!(await hasFullAccess())) redirect("/contracts");
 }
 
+// Emails allowed to use the "Mr. Fahmy" mode inside the Contracts page. This is
+// a STANDALONE allow-list — being here grants ONLY the Fahmy mode, never full
+// access or any other page. Two are built in; extra ones can be added via the
+// FAHMY_EMAILS env var (comma-separated).
+const FAHMY_EMAILS = [
+  "wasaserr@gmail.com",
+  "ahmdfhmy2023@gmail.com",
+  ...(process.env.FAHMY_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+];
+
+export function isFahmyEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return FAHMY_EMAILS.includes(email.toLowerCase());
+}
+
+/**
+ * Whether the signed-in user may use the "Mr. Fahmy" sales-analysis mode. This
+ * is deliberately separate from {@link hasFullAccess}: a Fahmy-only user still
+ * sees just the Contracts page and gets no other privileges.
+ */
+export async function canUseFahmy(): Promise<boolean> {
+  return isFahmyEmail(await currentUserEmail());
+}
+
 // Super-admin emails allowed to run destructive, cross-user maintenance (e.g.
 // wiping every other user's orders to hand the system to new users). Configure
 // as a comma-separated list in ADMIN_EMAILS. Keep this list tiny.

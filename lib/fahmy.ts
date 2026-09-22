@@ -270,16 +270,28 @@ export function parseTargets(sales: SheetMatrix): TargetInfo {
   }
   if (headerIdx < 0) return none;
 
-  // Sub-rows below the header: SLAB1/2/3 (company) or brand names (per-brand),
-  // each carrying an annual figure in the last column.
+  // Sub-rows below the header: SLAB1/2/3 (company) or brand names (per-brand).
+  // The annual figure normally sits in the total column (col 7, after Q1–Q4),
+  // but some files put a single annual value straight in col 3 with no quarters
+  // (LEAP: "SLAB1 12000000"). So annual = col 7 when present, else the sum of
+  // cols 3–6 (which equals the single value, or the four quarters).
   const rows: TargetSlab[] = [];
   for (let i = headerIdx + 1; i < sales.length; i++) {
-    const label = str(sales[i][1]);
-    const annual = num(sales[i][6]);
-    if (!label || annual <= 0) continue;
+    const row = sales[i];
+    const label = str(row[1]);
+    if (!label) continue;
+    const q: [number, number, number, number] = [
+      num(row[2]),
+      num(row[3]),
+      num(row[4]),
+      num(row[5]),
+    ];
+    const hasAnnualCol = num(row[6]) > 0;
+    const annual = hasAnnualCol ? num(row[6]) : q[0] + q[1] + q[2] + q[3];
+    if (annual <= 0) continue;
     rows.push({
       name: label.trim(),
-      q: [num(sales[i][2]), num(sales[i][3]), num(sales[i][4]), num(sales[i][5])],
+      q: hasAnnualCol ? q : [0, 0, 0, 0],
       annual,
     });
   }
