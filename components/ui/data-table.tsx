@@ -50,6 +50,11 @@ interface DataTableProps {
   ignorable?: {
     isIgnored: (id: string) => boolean;
     onToggle: (id: string) => void;
+    /**
+     * When set, the Ignore column renders immediately after this column instead
+     * of at the end of the table.
+     */
+    afterColumn?: string;
   };
   /** When provided, any cell becomes click-to-edit. */
   onEditCell?: (id: string, col: string, value: string) => void;
@@ -373,16 +378,22 @@ export function DataTable({
             {selection && <col style={{ width: "2.25rem" }} />}
             {completion && <col style={{ width: "3rem" }} />}
             {columns.map((col) => (
-              <col
-                key={col}
-                style={
-                  numericCols.has(col)
-                    ? { width: "5rem" }
-                    : { minWidth: "6rem" }
-                }
-              />
+              <React.Fragment key={col}>
+                <col
+                  style={
+                    numericCols.has(col)
+                      ? { width: "5rem" }
+                      : { minWidth: "6rem" }
+                  }
+                />
+                {ignorable?.afterColumn === col && (
+                  <col style={{ width: "4.5rem" }} />
+                )}
+              </React.Fragment>
             ))}
-            {ignorable && <col style={{ width: "4.5rem" }} />}
+            {ignorable && !columns.includes(ignorable.afterColumn ?? "") && (
+              <col style={{ width: "4.5rem" }} />
+            )}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-card">
             <tr>
@@ -413,8 +424,8 @@ export function DataTable({
                 const sorted = sort?.col === col;
                 const filtered = !!filters[col];
                 return (
+                  <React.Fragment key={col}>
                   <th
-                    key={col}
                     className="border-b border-border text-center font-semibold"
                   >
                     <div
@@ -471,9 +482,15 @@ export function DataTable({
                       </button>
                     </div>
                   </th>
+                  {ignorable?.afterColumn === col && (
+                    <th className="border-b border-border px-3 py-1.5 text-center font-semibold">
+                      Ignore
+                    </th>
+                  )}
+                  </React.Fragment>
                 );
               })}
-              {ignorable && (
+              {ignorable && !columns.includes(ignorable.afterColumn ?? "") && (
                 <th className="border-b border-border px-3 py-1.5 text-center font-semibold">
                   Ignore
                 </th>
@@ -485,6 +502,23 @@ export function DataTable({
               const completed = completion?.isCompleted(row.__id) ?? false;
               const ignored = ignorable?.isIgnored(row.__id) ?? false;
               const selected = selection?.isSelected(row.__id) ?? false;
+              const ignoreTd = ignorable && (
+                <td className="px-2 py-2 text-center align-top">
+                  <button
+                    type="button"
+                    onClick={() => ignorable.onToggle(row.__id)}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                      ignored
+                        ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground",
+                    )}
+                  >
+                    <EyeOff className="size-3" />
+                    {ignored ? "Ignored" : "Ignore"}
+                  </button>
+                </td>
+              );
               return (
                 <tr
                   key={row.__id}
@@ -544,10 +578,9 @@ export function DataTable({
                     ) : (
                       String(row[col])
                     );
-                    if (custom !== undefined) {
-                      return (
+                    const cell =
+                      custom !== undefined ? (
                         <td
-                          key={col}
                           className={cn(
                             "px-2 py-2 text-center align-top break-words",
                             numeric && "tabular-nums",
@@ -555,11 +588,8 @@ export function DataTable({
                         >
                           {custom}
                         </td>
-                      );
-                    }
-                    return (
+                      ) : (
                       <td
-                        key={col}
                         className={cn(
                           "px-2 py-2 align-top break-words",
                           numeric && "tabular-nums",
@@ -631,25 +661,17 @@ export function DataTable({
                           </div>
                         )}
                       </td>
+                      );
+                    return (
+                      <React.Fragment key={col}>
+                        {cell}
+                        {ignorable?.afterColumn === col && ignoreTd}
+                      </React.Fragment>
                     );
                   })}
-                  {ignorable && (
-                    <td className="px-2 py-2 text-center align-top">
-                      <button
-                        type="button"
-                        onClick={() => ignorable.onToggle(row.__id)}
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
-                          ignored
-                            ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
-                            : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground",
-                        )}
-                      >
-                        <EyeOff className="size-3" />
-                        {ignored ? "Ignored" : "Ignore"}
-                      </button>
-                    </td>
-                  )}
+                  {ignorable &&
+                    !columns.includes(ignorable.afterColumn ?? "") &&
+                    ignoreTd}
                 </tr>
               );
             })}

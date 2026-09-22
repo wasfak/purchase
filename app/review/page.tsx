@@ -4,7 +4,7 @@ import { requireFullAccess } from "@/lib/access";
 export default async function Page() {
   await requireFullAccess();
   return (
-    <main className="w-full space-y-5 p-6">
+    <main className="mx-auto w-full max-w-[1600px] space-y-5 p-6 pb-48">
       <div className="border-b pb-3">
         <h1 className="text-2xl font-bold tracking-tight">Review</h1>
         <p className="text-sm text-muted-foreground">

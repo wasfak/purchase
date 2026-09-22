@@ -70,6 +70,9 @@ const CATEGORY_OPTIONS = [
   "pharma",
   "sena",
   "sherktha",
+  "ابدا",
+  "مصرية",
+  "مصرية دمياط",
   "no need",
   "notes",
 ] as const;
@@ -512,15 +515,19 @@ export function ReviewWorkspace({
     const hasCode = columns.some((c) => normalizeHeader(c) === "code");
     return [
       ...columns,
+      CATEGORY_COL,
+      // Order: Category → Status date → [Ignore] → Send date → ع الطاير → Late.
+      // "Status date" can be turned off per workspace. The Ignore column is
+      // injected right after it by the table (ignorable.afterColumn).
+      ...(showStatusColumns ? [MARKED_COL] : []),
       // Only surface the Orders column when the sheet actually has a supplier
       // column to match on — otherwise it'd be all dashes.
       ...(supplierCol ? [SEND_COL] : []),
       // Flag codes already on a recent flying (ع الطاير) sheet. Personal Review
       // only (showOrders), and only when there's a code column to match on.
       ...(showOrders && hasCode ? [FLYING_COL] : []),
-      // The "Status date" + "Late" columns can be turned off per workspace.
-      ...(showStatusColumns ? [MARKED_COL, LATE_COL] : []),
-      CATEGORY_COL,
+      // "Late" can be turned off per workspace.
+      ...(showStatusColumns ? [LATE_COL] : []),
     ];
   }, [columns, supplierCol, showOrders, showStatusColumns]);
 
@@ -2214,6 +2221,7 @@ export function ReviewWorkspace({
             ignorable={{
               isIgnored: (id) => ignored.has(id),
               onToggle: toggleIgnore,
+              afterColumn: MARKED_COL,
             }}
             onEditCell={editCell}
             rightToolbar={
