@@ -114,7 +114,7 @@ function HBars({
 }) {
   if (items.length === 0)
     return <p className="text-sm text-muted-foreground">No data.</p>;
-  const max = Math.max(...items.map((i) => i.value), 1);
+  const max = items.reduce((m, i) => Math.max(m, i.value), 1);
   const total = items.reduce((a, b) => a + b.value, 0) || 1;
   return (
     <div className="space-y-2.5">
@@ -657,7 +657,9 @@ export function ContractsClient() {
         if (rows.length === 0) {
           toast.warning(`No purchase lines found in ${file.name}`);
         }
-        parsed.push(...rows);
+        // Not `parsed.push(...rows)`: spreading a large array into function
+        // arguments overflows the call stack on big files.
+        for (const row of rows) parsed.push(row);
         names.push(file.name);
       }
       // Adding files starts a fresh, unsaved result.

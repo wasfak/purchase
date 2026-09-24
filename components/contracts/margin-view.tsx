@@ -510,7 +510,7 @@ function SupplierLeaderboard({
   onExport: () => void;
   onClear: () => void;
 }) {
-  const maxMargin = Math.max(...suppliers.map((s) => s.netMarginPct), 1);
+  const maxMargin = suppliers.reduce((m, s) => Math.max(m, s.netMarginPct), 1);
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-2">

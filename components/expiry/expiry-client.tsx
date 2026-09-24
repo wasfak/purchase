@@ -557,7 +557,7 @@ export function ExpiryClient() {
             const m = extractExpiryMeta(text);
             if (m.store || m.dateFrom || m.dateTo) firstMeta = m;
           }
-          parsed.push(...fileRows);
+          for (const row of fileRows) parsed.push(row);
           names.push(file.name);
         }
         setRows((prev) => [...prev, ...parsed]);
