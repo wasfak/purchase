@@ -557,7 +557,11 @@ export function ExpiryClient() {
             const m = extractExpiryMeta(text);
             if (m.store || m.dateFrom || m.dateTo) firstMeta = m;
           }
-          parsed.push(...fileRows);
+          // Append one-by-one: `parsed.push(...fileRows)` spreads every row as
+          // a function argument, which overflows the argument limit ("Maximum
+          // call stack size exceeded") once a file has tens of thousands of
+          // lines.
+          for (const row of fileRows) parsed.push(row);
           names.push(file.name);
         }
         setRows((prev) => [...prev, ...parsed]);

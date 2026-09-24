@@ -657,7 +657,10 @@ export function ContractsClient() {
         if (rows.length === 0) {
           toast.warning(`No purchase lines found in ${file.name}`);
         }
-        parsed.push(...rows);
+        // Append one-by-one: `parsed.push(...rows)` spreads every row as a
+        // function argument, which overflows the argument limit ("Maximum call
+        // stack size exceeded") once a file has tens of thousands of lines.
+        for (const row of rows) parsed.push(row);
         names.push(file.name);
       }
       // Adding files starts a fresh, unsaved result.
