@@ -22,6 +22,7 @@ type NavIcon =
   | "ordersreview"
   | "alama"
   | "analytics"
+  | "winter"
   | "fahmy";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
@@ -35,7 +36,7 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Users without full access only ever see the Contracts tab; among
+  // Users without full access only see the Contracts and Winter tabs; among
   // full-access users, the Dashboard link additionally requires the dashboard
   // allow-list.
   const fullAccess = await hasFullAccess();
@@ -93,6 +94,7 @@ export default async function RootLayout({
           href: "/analytics",
           icon: "analytics",
         },
+        { value: "winter", label: "Winter", href: "/winter", icon: "winter" },
       ]
     : [
         {
@@ -101,6 +103,7 @@ export default async function RootLayout({
           href: "/contracts",
           icon: "contracts",
         },
+        { value: "winter", label: "Winter", href: "/winter", icon: "winter" },
       ];
 
   return (
@@ -119,7 +122,7 @@ export default async function RootLayout({
         <ClerkProvider>
           <ThemeProvider>
             <header className="sticky top-0 z-50 border-b border-border bg-card/90 backdrop-blur">
-              <div className="mx-auto w-full max-w-7xl">
+              <div className="mx-auto w-full max-w-[96rem]">
                 <NotchNav
                   items={navItems}
                   defaultValue={fullAccess ? "home" : "contracts"}

@@ -20,6 +20,7 @@ import {
   Tag,
   BarChart3,
   LineChart,
+  Snowflake,
 } from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
@@ -41,6 +42,7 @@ type IconName =
   | "ordersreview"
   | "alama"
   | "analytics"
+  | "winter"
   | "fahmy";
 
 type Item = {
@@ -111,6 +113,7 @@ export function NotchNav({
     ordersreview: FileSpreadsheet,
     alama: Tag,
     analytics: BarChart3,
+    winter: Snowflake,
     fahmy: LineChart,
   };
 
@@ -200,7 +203,7 @@ export function NotchNav({
       {/* Desktop nav — hidden on mobile */}
       <nav
         aria-label={ariaLabel}
-        className={["hidden md:block shrink-0", className].filter(Boolean).join(" ")}
+        className={["hidden xl:block shrink-0", className].filter(Boolean).join(" ")}
       >
         <div
           ref={containerRef}
@@ -208,7 +211,7 @@ export function NotchNav({
         >
           <ul
             role="menubar"
-            className="flex items-center justify-center gap-1 p-1"
+            className="flex items-center justify-center gap-0.5 p-1"
             onKeyDown={(e) => {
               const key = e.key;
               if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key))
@@ -223,10 +226,17 @@ export function NotchNav({
             {items.map((item, idx) => {
               const isActive = item.value === active;
               const Icon = item.icon ? iconMap[item.icon] : undefined;
+              // Labels always show; icons only on 2xl screens, where there is
+              // room for both.
               const content = (
                 <>
-                  {Icon && <Icon className="mr-1.5 h-4 w-4" aria-hidden="true" />}
-                  <span className="text-pretty">{item.label}</span>
+                  {Icon && (
+                    <Icon
+                      className="mr-1.5 hidden h-4 w-4 shrink-0 2xl:block"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span className="whitespace-nowrap">{item.label}</span>
                 </>
               );
 
@@ -241,11 +251,12 @@ export function NotchNav({
                       prefetch={false}
                       role="menuitem"
                       aria-label={item.label}
+                      title={item.label}
                       aria-current={isActive ? "page" : undefined}
                       tabIndex={isActive ? 0 : -1}
                       onClick={() => commitChange(item.value)}
                       className={[
-                        "relative inline-flex items-center rounded-md px-3 py-2 text-sm font-medium outline-none transition-colors",
+                        "relative inline-flex items-center rounded-md px-2 py-2 text-[13px] font-medium outline-none transition-colors",
                         "focus-visible:ring-2 focus-visible:ring-ring",
                         isActive
                           ? "text-primary"
@@ -261,6 +272,7 @@ export function NotchNav({
                       }}
                       role="menuitem"
                       aria-label={item.label}
+                      title={item.label}
                       aria-current={isActive ? "page" : undefined}
                       aria-pressed={isActive || undefined}
                       tabIndex={isActive ? 0 : -1}
@@ -272,7 +284,7 @@ export function NotchNav({
                         }
                       }}
                       className={[
-                        "relative rounded-md px-3 py-2 text-sm font-medium outline-none transition-colors",
+                        "relative inline-flex items-center rounded-md px-2 py-2 text-[13px] font-medium outline-none transition-colors",
                         "focus-visible:ring-2 focus-visible:ring-ring",
                         isActive
                           ? "text-primary"
@@ -340,13 +352,13 @@ export function NotchNav({
       </nav>
 
       {/* Desktop right side — hidden on mobile */}
-      <div className="hidden md:flex items-center gap-3">
+      <div className="hidden xl:flex shrink-0 items-center gap-3">
         <ThemeToggle />
         {authButtons}
       </div>
 
       {/* Mobile right side — visible only on mobile */}
-      <div className="flex md:hidden items-center gap-2">
+      <div className="flex xl:hidden items-center gap-2">
         <ThemeToggle />
         <button
           onClick={() => setMobileOpen(!mobileOpen)}
@@ -359,7 +371,7 @@ export function NotchNav({
 
       {/* Mobile menu overlay */}
       {mobileOpen && (
-        <div className="fixed inset-0 top-14 z-50 md:hidden">
+        <div className="fixed inset-0 top-14 z-50 xl:hidden">
           <div
             className="absolute inset-0 bg-background/80 backdrop-blur-sm"
             onClick={() => setMobileOpen(false)}
