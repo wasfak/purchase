@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   ShoppingCart,
   Star,
+  BadgePercent,
   FileText,
   AlarmClock,
   Calculator,
@@ -35,6 +36,7 @@ type IconName =
   | "orders"
   | "review"
   | "contracts"
+  | "inspire"
   | "expiry"
   | "autotasfya"
   | "zerocodes"
@@ -106,6 +108,7 @@ export function NotchNav({
     orders: ShoppingCart,
     review: Star,
     contracts: FileText,
+    inspire: BadgePercent,
     expiry: AlarmClock,
     autotasfya: Calculator,
     zerocodes: Hash,

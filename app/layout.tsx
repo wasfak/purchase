@@ -15,6 +15,7 @@ type NavIcon =
   | "orders"
   | "review"
   | "contracts"
+  | "inspire"
   | "expiry"
   | "autotasfya"
   | "zerocodes"
@@ -69,6 +70,7 @@ export default async function RootLayout({
         },
         { value: "review", label: "Review", href: "/review", icon: "review" },
         { value: "contracts", label: "Contracts", href: "/contracts", icon: "contracts" },
+        { value: "inspire", label: "Inspire", href: "/inspire", icon: "inspire" },
         { value: "expiry", label: "Expiry", href: "/expiry", icon: "expiry" },
         {
           value: "auto-tasfya",
