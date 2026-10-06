@@ -28,8 +28,9 @@ const COLS = [
 type Col = (typeof COLS)[number];
 type Row = Record<Col, string | number>;
 
-// Cells in "اسم الصنف" containing any of these exact markers are highlighted.
-const HIGHLIGHT_MARKERS = ["#B#", "#NA#", "#C.C#"];
+// Cells in "اسم الصنف" containing any of these markers are highlighted.
+// "#B" also covers "#B#".
+const HIGHLIGHT_MARKERS = ["#B", "#NA#", "#C#", "#C.C#"];
 
 // Positional column indices in the HTML order report (matches the Python
 // df[7]/df[14]/df[16]).
