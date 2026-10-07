@@ -7,7 +7,11 @@ import { NotchNav } from "@/components/ui/notch-nav";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
-import { canViewDashboard, hasFullAccess } from "@/lib/access";
+import {
+  canViewDashboard,
+  hasFullAccess,
+  isOrdersReviewOnly,
+} from "@/lib/access";
 
 type NavIcon =
   | "home"
@@ -42,7 +46,17 @@ export default async function RootLayout({
   // allow-list.
   const fullAccess = await hasFullAccess();
   const showDashboard = fullAccess && (await canViewDashboard());
-  const navItems: NavItem[] = fullAccess
+  const ordersReviewOnly = !fullAccess && (await isOrdersReviewOnly());
+  const navItems: NavItem[] = ordersReviewOnly
+    ? [
+        {
+          value: "orders-review",
+          label: "مراجعة اوردرات",
+          href: "/orders-review",
+          icon: "ordersreview",
+        },
+      ]
+    : fullAccess
     ? [
         { value: "home", label: "Notes", href: "/", icon: "home" },
         ...(showDashboard
@@ -127,7 +141,13 @@ export default async function RootLayout({
               <div className="mx-auto w-full max-w-[96rem]">
                 <NotchNav
                   items={navItems}
-                  defaultValue={fullAccess ? "home" : "contracts"}
+                  defaultValue={
+                    fullAccess
+                      ? "home"
+                      : ordersReviewOnly
+                        ? "orders-review"
+                        : "contracts"
+                  }
                   ariaLabel="Primary navigation"
                 />
               </div>

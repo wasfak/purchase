@@ -66,7 +66,8 @@ export async function hasFullAccess(): Promise<boolean> {
  * sent to the Contracts page, the only one they're allowed to use.
  */
 export async function requireFullAccess(): Promise<void> {
-  if (!(await hasFullAccess())) redirect("/contracts");
+  if (await hasFullAccess()) return;
+  redirect((await isOrdersReviewOnly()) ? "/orders-review" : "/contracts");
 }
 
 // Emails allowed to use the "Mr. Fahmy" mode inside the Contracts page. This is
@@ -94,6 +95,40 @@ export function isFahmyEmail(email: string | null | undefined): boolean {
  */
 export async function canUseFahmy(): Promise<boolean> {
   return isFahmyEmail(await currentUserEmail());
+}
+
+// Emails restricted to ONLY the مراجعة اوردرات (/orders-review) page — they
+// can't open Contracts, Winter or anything else. Extra ones can be added via
+// the ORDERS_REVIEW_EMAILS env var (comma-separated). A full-access email listed
+// here keeps full access.
+const ORDERS_REVIEW_EMAILS = [
+  "wafaaelshouratarshouby@gmail.com",
+  ...(process.env.ORDERS_REVIEW_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+];
+
+/** Whether the signed-in user is limited to the Orders Review page only. */
+export async function isOrdersReviewOnly(): Promise<boolean> {
+  const email = await currentUserEmail();
+  if (!email || !ORDERS_REVIEW_EMAILS.includes(email.toLowerCase())) {
+    return false;
+  }
+  return !(await hasFullAccess());
+}
+
+/** Whether the signed-in user may open the Orders Review page. */
+export async function canUseOrdersReview(): Promise<boolean> {
+  return (await hasFullAccess()) || (await isOrdersReviewOnly());
+}
+
+/**
+ * Guard for the pages open to every signed-in user (Contracts, Winter):
+ * orders-review-only users are sent back to their one page.
+ */
+export async function blockOrdersReviewOnly(): Promise<void> {
+  if (await isOrdersReviewOnly()) redirect("/orders-review");
 }
 
 // Super-admin emails allowed to run destructive, cross-user maintenance (e.g.

@@ -2,6 +2,7 @@ import Image from "next/image";
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 
+import { blockOrdersReviewOnly } from "@/lib/access";
 import { WinterClient } from "@/components/winter/winter-client";
 import winterDark from "@/public/winter-has-come.png";
 import winterLight from "@/public/winter-has-come-light.png";
@@ -10,6 +11,7 @@ import winterLight from "@/public/winter-has-come-light.png";
 export default async function Page() {
   const { userId } = await auth();
   if (!userId) redirect("/sign-in");
+  await blockOrdersReviewOnly();
   return (
     <main className="mx-auto w-full max-w-5xl space-y-5 p-6">
       <div className="flex justify-center border-b pb-3">

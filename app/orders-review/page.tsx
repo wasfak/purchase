@@ -1,8 +1,9 @@
+import { redirect } from "next/navigation";
 import { OrdersReview } from "@/components/orders-review/orders-review";
-import { requireFullAccess } from "@/lib/access";
+import { canUseOrdersReview } from "@/lib/access";
 
 export default async function Page() {
-  await requireFullAccess();
+  if (!(await canUseOrdersReview())) redirect("/contracts");
   return (
     <main className="w-full space-y-5 px-4 py-6">
       <div className="border-b pb-3">
