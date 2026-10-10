@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, ArrowUpDown, Filter } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -383,22 +383,54 @@ function isReviewDue(order: Order): boolean {
   return reviewStatus(order).state === "due";
 }
 
-// Columns the table can be sorted by, both date-valued.
-type SortKey = "orderDay" | "dateOfDoing";
-const SORTABLE_KEYS = new Set<SortKey>(["orderDay", "dateOfDoing"]);
+// A column the Excel-style header menu can sort + filter: `value` is the text
+// shown in the filter's checkbox list, `sort` a comparable key (null = blank,
+// always sorted to the bottom regardless of direction).
+type FilterCol = {
+  key: string;
+  label: string;
+  value: (o: Order) => string;
+  sort: (o: Order) => number | string | null;
+};
 
-// A comparable timestamp for a sortable column, or null when the order has no
-// usable value there (nulls always sort to the bottom, regardless of direction).
-// Order day understands both a real date and a legacy day-number (via dueDateOf).
-function sortValueOf(order: Order, key: SortKey): number | null {
-  if (key === "orderDay") {
-    const d = dueDateOf(order);
-    return d ? d.getTime() : null;
-  }
-  const v = (order.dateOfDoing ?? "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
-  return new Date(`${v}T00:00:00`).getTime();
+// The filter text for a data column — matches what the cell shows.
+function columnText(col: Column, o: Order): string {
+  const raw = (o[col.key] ?? "").trim();
+  if (col.type === "yesno") return raw.toLowerCase() === "yes" ? "Yes" : "No";
+  if (col.type === "day") return displayDay(raw);
+  if (col.type === "date") return displayDate(raw);
+  return raw;
 }
+
+// The sort key for a data column: real timestamps for dates (order day
+// understands legacy day-numbers via dueDateOf), lowercase text otherwise.
+function columnSort(col: Column, o: Order): number | string | null {
+  if (col.type === "day") return dueDateOf(o)?.getTime() ?? null;
+  const raw = (o[col.key] ?? "").trim();
+  if (col.type === "date") {
+    return /^\d{4}-\d{2}-\d{2}$/.test(raw)
+      ? new Date(`${raw}T00:00:00`).getTime()
+      : raw.toLowerCase() || null;
+  }
+  if (col.type === "yesno") return raw.toLowerCase() === "yes" ? "yes" : "no";
+  return raw.toLowerCase() || null;
+}
+
+function compareSortKeys(a: number | string, b: number | string): number {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), undefined, { numeric: true });
+}
+
+// The review column's state as filter text.
+const REVIEW_LABELS: Record<ReturnType<typeof reviewStatus>["state"], string> = {
+  none: "",
+  reviewed: "Reviewed",
+  done: "Settled",
+  due: "Review tasfya",
+  waiting: "Waiting",
+};
+
+const fmtFilterValue = (v: string) => (v === "" ? "(Blanks)" : v);
 
 // The read-only display node for a cell, with a dash fallback when empty.
 function cellValue(col: Column, raw: string, overdue: boolean): React.ReactNode {
@@ -496,11 +528,24 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
   // Narrows the table. Empty set = show all; otherwise a row must pass every
   // selected filter. Lets you combine e.g. "Important" + "Due soon".
   const [filters, setFilters] = React.useState<Set<OrderFilter>>(new Set());
-  // Optional sort on a date column (Order day / Date of doing). Clicking a
-  // sortable header cycles asc → desc → off. null = natural (insertion) order.
-  const [sort, setSort] = React.useState<{ key: SortKey; dir: "asc" | "desc" } | null>(
+  // Optional sort on any filterable column. Clicking a header cycles
+  // asc → desc → off. null = natural (insertion) order.
+  const [sort, setSort] = React.useState<{ key: string; dir: "asc" | "desc" } | null>(
     null,
   );
+  // Excel-style per-column filters: column key → the allowed values. A column
+  // absent from the map is unfiltered.
+  const [colFilters, setColFilters] = React.useState<Record<string, Set<string>>>(
+    {},
+  );
+  // The open header filter menu (anchored to its button) + its value search.
+  const [colMenu, setColMenu] = React.useState<{
+    key: string;
+    x: number;
+    y: number;
+    top: number;
+  } | null>(null);
+  const [valSearch, setValSearch] = React.useState("");
   // Whether the "Show" multi-select dropdown is open.
   const [filterMenuOpen, setFilterMenuOpen] = React.useState(false);
   const filterMenuRef = React.useRef<HTMLDivElement>(null);
@@ -589,46 +634,6 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
       }),
     [orders, month],
   );
-
-  // The rows actually rendered: the month's orders, optionally narrowed by the
-  // active filter. Kept separate from visibleOrders so month-level logic
-  // (dedup, carry-over) still sees every row.
-  const displayedOrders = React.useMemo(() => {
-    let rows = visibleOrders;
-    // Apply every selected filter — a row must pass all of them (AND).
-    const active = FILTER_OPTIONS.filter((f) => filters.has(f.value));
-    if (active.length > 0) {
-      rows = rows.filter((o) => active.every((f) => f.test(o)));
-    }
-    const q = search.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter((o) =>
-        (o.companyName ?? "").toLowerCase().includes(q),
-      );
-    }
-    if (sort) {
-      // Stable sort; orders with no value in the sorted column go to the bottom
-      // in both directions, so blanks never crowd the top.
-      const factor = sort.dir === "asc" ? 1 : -1;
-      rows = [...rows].sort((a, b) => {
-        const va = sortValueOf(a, sort.key);
-        const vb = sortValueOf(b, sort.key);
-        if (va === null && vb === null) return 0;
-        if (va === null) return 1;
-        if (vb === null) return -1;
-        return (va - vb) * factor;
-      });
-    }
-    return rows;
-  }, [visibleOrders, filters, search, sort]);
-
-  // Cycle a sortable column: asc → desc → off (back to natural order).
-  const toggleSort = (key: SortKey) =>
-    setSort((prev) => {
-      if (!prev || prev.key !== key) return { key, dir: "asc" };
-      if (prev.dir === "asc") return { key, dir: "desc" };
-      return null;
-    });
 
   // The newest month (other than the one selected) that actually has orders —
   // the source we offer to carry companies over from into a fresh month.
@@ -815,6 +820,246 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     }
     return m;
   }, [expiryItems]);
+
+  // Every column the header menus can sort + filter: the data columns plus the
+  // derived status columns (تقفيلات / Review / Display exp).
+  const filterCols = React.useMemo<FilterCol[]>(() => {
+    const taqfeelatText = (o: Order) => {
+      const key = normalizeCompany(o.companyName ?? "");
+      if (!taqfeelatKeys.has(key)) return "";
+      if (taqfeelatDoneKeys.has(key)) return "On (done)";
+      return isDone(o) ? "Pending" : "On";
+    };
+    const expCount = (o: Order) =>
+      expiryByCompany.get(normalizeCompany(o.companyName ?? ""))?.length ?? 0;
+    const review = (o: Order) => REVIEW_LABELS[reviewStatus(o).state];
+    return [
+      ...COLUMNS.map((col) => ({
+        key: col.key,
+        label: col.label,
+        value: (o: Order) => columnText(col, o),
+        sort: (o: Order) => columnSort(col, o),
+      })),
+      {
+        key: "_taqfeelat",
+        label: "تقفيلات",
+        value: taqfeelatText,
+        sort: (o) => taqfeelatText(o) || null,
+      },
+      {
+        key: "_review",
+        label: "Review",
+        value: review,
+        sort: (o) => review(o) || null,
+      },
+      {
+        key: "_exp",
+        label: "Display exp",
+        value: (o) => (expCount(o) > 0 ? "Has expiring" : ""),
+        sort: (o) => expCount(o) || null,
+      },
+    ];
+  }, [taqfeelatKeys, taqfeelatDoneKeys, expiryByCompany]);
+
+  const filterColByKey = React.useMemo(
+    () => new Map(filterCols.map((c) => [c.key, c])),
+    [filterCols],
+  );
+
+  // Each column's distinct values across the month's rows, in sorted order
+  // (by the column's sort key, so dates list chronologically; blanks last).
+  const colDomains = React.useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const fc of filterCols) {
+      const seen = new Map<string, number | string | null>();
+      for (const o of visibleOrders) {
+        const v = fc.value(o);
+        if (!seen.has(v)) seen.set(v, v === "" ? null : fc.sort(o));
+      }
+      map[fc.key] = [...seen.entries()]
+        .sort(([va, ka], [vb, kb]) => {
+          if (va === "" || vb === "") return va === "" ? 1 : -1;
+          if (ka === null || kb === null) return ka === null ? 1 : -1;
+          return compareSortKeys(ka, kb) || va.localeCompare(vb);
+        })
+        .map(([v]) => v);
+    }
+    return map;
+  }, [filterCols, visibleOrders]);
+
+  // The rows actually rendered: the month's orders, narrowed by the "Show"
+  // filters, the column filters and the search. Kept separate from
+  // visibleOrders so month-level logic (dedup, carry-over) still sees every row.
+  const displayedOrders = React.useMemo(() => {
+    let rows = visibleOrders;
+    // Apply every selected filter — a row must pass all of them (AND).
+    const active = FILTER_OPTIONS.filter((f) => filters.has(f.value));
+    if (active.length > 0) {
+      rows = rows.filter((o) => active.every((f) => f.test(o)));
+    }
+    const colActive: [FilterCol, Set<string>][] = [];
+    for (const [key, allowed] of Object.entries(colFilters)) {
+      const fc = filterColByKey.get(key);
+      if (fc) colActive.push([fc, allowed]);
+    }
+    if (colActive.length > 0) {
+      rows = rows.filter((o) =>
+        colActive.every(([fc, allowed]) => allowed.has(fc.value(o))),
+      );
+    }
+    const q = search.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((o) =>
+        (o.companyName ?? "").toLowerCase().includes(q),
+      );
+    }
+    const sortCol = sort ? filterColByKey.get(sort.key) : undefined;
+    if (sort && sortCol) {
+      // Stable sort; orders with no value in the sorted column go to the bottom
+      // in both directions, so blanks never crowd the top.
+      const factor = sort.dir === "asc" ? 1 : -1;
+      rows = [...rows].sort((a, b) => {
+        const va = sortCol.sort(a);
+        const vb = sortCol.sort(b);
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        return compareSortKeys(va, vb) * factor;
+      });
+    }
+    return rows;
+  }, [visibleOrders, filters, colFilters, filterColByKey, search, sort]);
+
+  // Cycle a column's sort: asc → desc → off (back to natural order).
+  const toggleSort = (key: string) =>
+    setSort((prev) => {
+      if (!prev || prev.key !== key) return { key, dir: "asc" };
+      if (prev.dir === "asc") return { key, dir: "desc" };
+      return null;
+    });
+
+  // Edit a column's allowed-value set; once every value is allowed again the
+  // column's filter is dropped.
+  const setColumnFilter = (
+    key: string,
+    mutate: (allowed: Set<string>) => void,
+  ) =>
+    setColFilters((prev) => {
+      const domain = colDomains[key] ?? [];
+      const allowed = prev[key] ? new Set(prev[key]) : new Set(domain);
+      mutate(allowed);
+      const next = { ...prev };
+      if (domain.every((v) => allowed.has(v))) delete next[key];
+      else next[key] = allowed;
+      return next;
+    });
+
+  const clearColumnFilter = (key: string) => {
+    setColFilters((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setColMenu(null);
+  };
+
+  // Close the header filter menu on outside click, Escape or resize.
+  React.useEffect(() => {
+    if (!colMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-col-filter]"))
+        setColMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setColMenu(null);
+    const onResize = () => setColMenu(null);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [colMenu]);
+
+  // The open menu's values, narrowed by its value search.
+  const menuValues = React.useMemo(() => {
+    if (!colMenu) return [];
+    const domain = colDomains[colMenu.key] ?? [];
+    const q = valSearch.trim().toLowerCase();
+    if (!q) return domain;
+    return domain.filter((v) => fmtFilterValue(v).toLowerCase().includes(q));
+  }, [colMenu, valSearch, colDomains]);
+
+  const colFilterCount = Object.keys(colFilters).length;
+
+  // A header cell with a sort toggle and an Excel-style filter button.
+  const filterHeader = (fc: FilterCol, center = false) => {
+    const activeSort = sort?.key === fc.key ? sort.dir : null;
+    const filtered = !!colFilters[fc.key];
+    return (
+      <th
+        key={fc.key}
+        className="whitespace-nowrap px-2 py-1.5 font-semibold text-muted-foreground"
+        aria-sort={
+          activeSort
+            ? activeSort === "asc"
+              ? "ascending"
+              : "descending"
+            : undefined
+        }
+      >
+        <div
+          data-col-filter
+          className={cn("flex items-center gap-0.5", center && "justify-center")}
+        >
+          <button
+            type="button"
+            onClick={() => toggleSort(fc.key)}
+            className={cn(
+              "inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:text-foreground",
+              activeSort && "text-foreground",
+            )}
+            title={`Sort by ${fc.label}`}
+          >
+            {fc.label}
+            {activeSort === "asc" ? (
+              <ArrowUp className="size-3.5" />
+            ) : activeSort === "desc" ? (
+              <ArrowDown className="size-3.5" />
+            ) : (
+              <ArrowUpDown className="size-3.5 opacity-40" />
+            )}
+          </button>
+          <button
+            type="button"
+            aria-label={`Filter ${fc.label}`}
+            title={`Filter ${fc.label}`}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setValSearch("");
+              setColMenu((m) =>
+                m?.key === fc.key
+                  ? null
+                  : {
+                      key: fc.key,
+                      x: Math.min(r.left, window.innerWidth - 272),
+                      y: r.bottom,
+                      top: r.top,
+                    },
+              );
+            }}
+            className={cn(
+              "grid size-6 shrink-0 place-items-center rounded transition-colors hover:bg-muted hover:text-foreground",
+              filtered && "text-primary",
+            )}
+          >
+            <Filter className={cn("size-3.5", filtered && "fill-primary/20")} />
+          </button>
+        </div>
+      </th>
+    );
+  };
 
   function openAdd() {
     setForm(emptyForm());
@@ -1340,9 +1585,22 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         {filters.size > 0 &&
           ` · ${FILTER_OPTIONS.filter((f) => filters.has(f.value))
             .map((f) => f.label)
-            .join(" + ")}`}{" "}
+            .join(" + ")}`}
+        {colFilterCount > 0 &&
+          ` · ${colFilterCount} column filter${colFilterCount === 1 ? "" : "s"}`}{" "}
         in {monthLabel(month)}
       </span>
+      {colFilterCount > 0 && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setColFilters({})}
+          title="Clear every column filter"
+        >
+          <X /> Clear column filters
+        </Button>
+      )}
       <label className="relative flex items-center">
         <Search className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground" />
         <input
@@ -1605,6 +1863,8 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
               <p className="text-sm text-muted-foreground">
                 {search.trim()
                   ? `No companies matching "${search.trim()}" in ${monthLabel(month)}.`
+                  : colFilterCount > 0
+                    ? `No orders match the column filters in ${monthLabel(month)}.`
                   : filters.size > 0
                     ? `No orders matching ${FILTER_OPTIONS.filter((f) =>
                         filters.has(f.value),
@@ -1619,55 +1879,10 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {COLUMNS.map((col) => {
-                    const sortable = SORTABLE_KEYS.has(col.key as SortKey);
-                    const activeSort = sort?.key === col.key ? sort.dir : null;
-                    return (
-                      <th
-                        key={col.key}
-                        className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground"
-                        aria-sort={
-                          activeSort
-                            ? activeSort === "asc"
-                              ? "ascending"
-                              : "descending"
-                            : undefined
-                        }
-                      >
-                        {sortable ? (
-                          <button
-                            type="button"
-                            onClick={() => toggleSort(col.key as SortKey)}
-                            className={cn(
-                              "-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:text-foreground",
-                              activeSort && "text-foreground",
-                            )}
-                            title={`Sort by ${col.label}`}
-                          >
-                            {col.label}
-                            {activeSort === "asc" ? (
-                              <ArrowUp className="size-3.5" />
-                            ) : activeSort === "desc" ? (
-                              <ArrowDown className="size-3.5" />
-                            ) : (
-                              <ArrowUpDown className="size-3.5 opacity-40" />
-                            )}
-                          </button>
-                        ) : (
-                          col.label
-                        )}
-                      </th>
-                    );
-                  })}
-                  <th className="whitespace-nowrap px-3 py-2.5 text-center font-semibold text-muted-foreground">
-                    تقفيلات
-                  </th>
-                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
-                    Review
-                  </th>
-                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
-                    Display exp
-                  </th>
+                  {COLUMNS.map((col) => filterHeader(filterColByKey.get(col.key)!))}
+                  {filterHeader(filterColByKey.get("_taqfeelat")!, true)}
+                  {filterHeader(filterColByKey.get("_review")!)}
+                  {filterHeader(filterColByKey.get("_exp")!)}
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
                     Auto Tasfya
                   </th>
@@ -1970,6 +2185,145 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
           )}
         </>
       )}
+
+      {/* Excel-style column filter dropdown */}
+      {colMenu &&
+        (() => {
+          const fc = filterColByKey.get(colMenu.key);
+          if (!fc) return null;
+          const allowed = colFilters[colMenu.key];
+          const isChecked = (v: string) => !allowed || allowed.has(v);
+          const allChecked = menuValues.every(isChecked);
+          const someChecked = menuValues.some(isChecked);
+          // Flip above the button when there isn't room below.
+          const EST_HEIGHT = 380;
+          const spaceBelow = window.innerHeight - colMenu.y;
+          const openUp = spaceBelow < EST_HEIGHT && colMenu.top > spaceBelow;
+          const posStyle: React.CSSProperties = openUp
+            ? {
+                position: "fixed",
+                bottom: window.innerHeight - colMenu.top + 4,
+                left: colMenu.x,
+              }
+            : { position: "fixed", top: colMenu.y + 4, left: colMenu.x };
+          return (
+            <div
+              data-col-filter
+              style={posStyle}
+              className="z-50 flex max-h-[calc(100vh-1rem)] w-68 flex-col overflow-auto rounded-lg border border-border bg-card p-2 text-sm shadow-xl"
+            >
+              <div className="flex gap-1 pb-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSort({ key: colMenu.key, dir: "asc" });
+                    setColMenu(null);
+                  }}
+                  className="flex flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-muted"
+                >
+                  <ArrowUp className="size-3.5" /> Sort ascending
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSort({ key: colMenu.key, dir: "desc" });
+                    setColMenu(null);
+                  }}
+                  className="flex flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-muted"
+                >
+                  <ArrowDown className="size-3.5" /> Sort descending
+                </button>
+              </div>
+
+              <div className="-mx-2 border-t border-border" />
+
+              <div className="relative pt-2">
+                <Search className="pointer-events-none absolute start-2 top-1/2 mt-1 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  autoFocus
+                  value={valSearch}
+                  onChange={(e) => setValSearch(e.target.value)}
+                  placeholder={`Search ${fc.label}…`}
+                  className="h-8 w-full rounded-md border border-border bg-background ps-7 pe-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
+                />
+              </div>
+
+              <label className="mt-2 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 font-medium hover:bg-muted">
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-primary"
+                  checked={allChecked}
+                  ref={(el) => {
+                    if (el) el.indeterminate = !allChecked && someChecked;
+                  }}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setColumnFilter(colMenu.key, (set) => {
+                      for (const v of menuValues) {
+                        if (on) set.add(v);
+                        else set.delete(v);
+                      }
+                    });
+                  }}
+                />
+                <span>(Select all{valSearch ? " in search" : ""})</span>
+              </label>
+
+              <div className="max-h-56 overflow-auto py-1">
+                {menuValues.length === 0 && (
+                  <p className="px-2 py-3 text-center text-muted-foreground">
+                    No matching values.
+                  </p>
+                )}
+                {menuValues.map((v) => (
+                  <label
+                    key={v}
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-muted"
+                  >
+                    <input
+                      type="checkbox"
+                      className="size-3.5 accent-primary"
+                      checked={isChecked(v)}
+                      onChange={() =>
+                        setColumnFilter(colMenu.key, (set) => {
+                          if (set.has(v)) set.delete(v);
+                          else set.add(v);
+                        })
+                      }
+                    />
+                    <span
+                      dir="auto"
+                      className={cn(
+                        "truncate",
+                        v === "" && "italic text-muted-foreground",
+                      )}
+                      title={fmtFilterValue(v)}
+                    >
+                      {fmtFilterValue(v)}
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="-mx-2 border-t border-border" />
+
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => clearColumnFilter(colMenu.key)}
+                  disabled={!allowed}
+                >
+                  Clear filter
+                </Button>
+                <Button type="button" size="sm" onClick={() => setColMenu(null)}>
+                  <Check /> Done
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
 
       {openExpiry && (
         <CompanyExpiryModal
