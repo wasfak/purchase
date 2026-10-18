@@ -15,6 +15,18 @@ const CompanyNoteEntrySchema = new Schema(
   { _id: false },
 );
 
+// Optional fixed details about the company (all free text, empty = not set).
+const CompanyDetailsSchema = new Schema(
+  {
+    discount: { type: String, default: "" }, // الخصم
+    repNumber: { type: String, default: "" }, // رقم المندوب
+    eTax: { type: String, default: "" }, // الكترونى ضريبى
+    collection: { type: String, default: "" }, // التحصيل
+    remarks: { type: String, default: "" }, // ملحوظات
+  },
+  { _id: false },
+);
+
 const CompanyNoteSchema = new Schema(
   {
     ownerId: { type: String, required: true, index: true },
@@ -24,6 +36,8 @@ const CompanyNoteSchema = new Schema(
     companyName: { type: String, default: "" },
     // The company's notes, one entry per note, searchable on the company page.
     entries: { type: [CompanyNoteEntrySchema], default: [] },
+    // Optional company details (discount, rep number, …).
+    details: { type: CompanyDetailsSchema, default: () => ({}) },
     // Legacy single-text notes, kept so older documents still read.
     notes: { type: String, default: "" },
   },
@@ -33,6 +47,16 @@ const CompanyNoteSchema = new Schema(
 CompanyNoteSchema.index({ ownerId: 1, key: 1 }, { unique: true });
 
 export type CompanyNoteDoc = InferSchemaType<typeof CompanyNoteSchema>;
+
+export const COMPANY_DETAIL_FIELDS = [
+  "discount",
+  "repNumber",
+  "eTax",
+  "collection",
+  "remarks",
+] as const;
+
+export type CompanyDetailField = (typeof COMPANY_DETAIL_FIELDS)[number];
 
 export const CompanyNote =
   models.CompanyNote || model("CompanyNote", CompanyNoteSchema);

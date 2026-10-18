@@ -14,6 +14,8 @@ import {
   Building2,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
+  Save,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,6 +29,24 @@ import {
 
 type Order = Record<string, string> & { _id: string };
 type NoteEntry = { text: string; at: number };
+
+// Optional per-company details, saved alongside the company notes.
+const DETAIL_FIELDS = [
+  { key: "discount", label: "الخصم" },
+  { key: "repNumber", label: "رقم المندوب" },
+  { key: "eTax", label: "الكترونى ضريبى" },
+  { key: "collection", label: "التحصيل" },
+  { key: "remarks", label: "ملحوظات", multiline: true },
+] as const;
+type DetailKey = (typeof DETAIL_FIELDS)[number]["key"];
+type Details = Record<DetailKey, string>;
+const EMPTY_DETAILS: Details = {
+  discount: "",
+  repNumber: "",
+  eTax: "",
+  collection: "",
+  remarks: "",
+};
 
 // The order fields shown, in display order, on the company history table.
 const HISTORY_COLUMNS: { key: string; label: string; kind?: "date" | "day" }[] =
@@ -82,6 +102,10 @@ export function CompanyDetail({ company }: { company: string }) {
   const [draft, setDraft] = React.useState("");
   const [noteQuery, setNoteQuery] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [details, setDetails] = React.useState<Details>(EMPTY_DETAILS);
+  const [savedDetails, setSavedDetails] =
+    React.useState<Details>(EMPTY_DETAILS);
+  const [savingDetails, setSavingDetails] = React.useState(false);
 
   React.useEffect(() => {
     let active = true;
@@ -115,6 +139,12 @@ export function CompanyDetail({ company }: { company: string }) {
             loaded.push({ text: String(doc.notes), at: 0 });
           }
           setEntries(loaded);
+          const d = { ...EMPTY_DETAILS };
+          for (const f of DETAIL_FIELDS) {
+            d[f.key] = String(doc?.details?.[f.key] ?? "");
+          }
+          setDetails(d);
+          setSavedDetails(d);
         }
 
         if (active && expiryRes.ok) {
@@ -166,6 +196,36 @@ export function CompanyDetail({ company }: { company: string }) {
     }
   }
 
+  const detailsDirty = DETAIL_FIELDS.some(
+    (f) => details[f.key].trim() !== savedDetails[f.key].trim(),
+  );
+
+  function setDetail(key: DetailKey, value: string) {
+    setDetails((d) => ({ ...d, [key]: value }));
+  }
+
+  function onDetailKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" && detailsDirty) saveDetails();
+  }
+
+  async function saveDetails() {
+    setSavingDetails(true);
+    try {
+      const res = await fetch("/api/company-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ company, details }),
+      });
+      if (!res.ok) throw new Error();
+      setSavedDetails(details);
+      toast.success("Company details saved");
+    } catch {
+      toast.error("Couldn't save the details");
+    } finally {
+      setSavingDetails(false);
+    }
+  }
+
   function addNote() {
     const text = draft.trim();
     if (!text) return;
@@ -211,6 +271,113 @@ export function CompanyDetail({ company }: { company: string }) {
           </p>
         </div>
       </div>
+
+      {/* Company details — optional fixed info (discount, rep number, …). */}
+      <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <ClipboardList className="size-4 text-primary" />
+            Company details
+            <span className="text-xs font-normal text-muted-foreground">
+              (optional)
+            </span>
+          </h2>
+          <Button
+            type="button"
+            size="sm"
+            onClick={saveDetails}
+            disabled={!detailsDirty || savingDetails}
+          >
+            {savingDetails ? <Loader2 className="animate-spin" /> : <Save />}
+            Save
+          </Button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" dir="rtl">
+          {DETAIL_FIELDS.map((f) => {
+            const multiline = "multiline" in f && f.multiline;
+            const cls =
+              "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40";
+            return (
+              <div
+                key={f.key}
+                className={cn(
+                  "flex flex-col gap-1 text-xs font-medium text-muted-foreground",
+                  multiline && "sm:col-span-2 lg:col-span-4",
+                )}
+              >
+                <span>{f.label}</span>
+                {multiline ? (
+                  <textarea
+                    value={details[f.key]}
+                    dir="auto"
+                    rows={2}
+                    onChange={(e) => setDetail(f.key, e.target.value)}
+                    className={cn(cls, "resize-y")}
+                  />
+                ) : f.key === "eTax" ? (
+                  <div className="flex items-center gap-1.5">
+                    {["نعم", "لا"].map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() =>
+                          setDetail(f.key, details[f.key] === opt ? "" : opt)
+                        }
+                        className={cn(
+                          "h-9 shrink-0 rounded-lg border px-3 text-sm font-medium transition-colors",
+                          details[f.key] === opt
+                            ? opt === "نعم"
+                              ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                              : "border-destructive/60 bg-destructive/10 text-destructive"
+                            : "border-border bg-background text-foreground hover:bg-muted",
+                        )}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                    <input
+                      value={
+                        details[f.key] === "نعم" || details[f.key] === "لا"
+                          ? ""
+                          : details[f.key]
+                      }
+                      dir="auto"
+                      placeholder="أو اكتب…"
+                      onChange={(e) => setDetail(f.key, e.target.value)}
+                      onKeyDown={onDetailKeyDown}
+                      className={cn(cls, "h-9 min-w-0 py-0")}
+                    />
+                  </div>
+                ) : f.key === "discount" ? (
+                  <div className="relative">
+                    <input
+                      value={details[f.key]}
+                      dir="ltr"
+                      inputMode="decimal"
+                      onChange={(e) =>
+                        setDetail(f.key, e.target.value.replace(/%/g, ""))
+                      }
+                      onKeyDown={onDetailKeyDown}
+                      className={cn(cls, "h-9 py-0 pr-8 text-left tabular-nums")}
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                      %
+                    </span>
+                  </div>
+                ) : (
+                  <input
+                    value={details[f.key]}
+                    dir="auto"
+                    onChange={(e) => setDetail(f.key, e.target.value)}
+                    onKeyDown={onDetailKeyDown}
+                    className={cn(cls, "h-9 py-0")}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       {/* Company notes — a searchable list of entries, saved to the DB and
           shared across every month for this company. */}

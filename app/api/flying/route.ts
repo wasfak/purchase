@@ -16,6 +16,20 @@ export async function GET(request: Request) {
   }
 
   const params = new URL(request.url).searchParams;
+
+  // GET /api/flying?list=1 — the user's saved sheets (summary only), newest first.
+  if (params.get("list")) {
+    await connectDB();
+    const docs = await FlyingSheet.find(
+      { ownerId: userId },
+      { month: 1, company: 1, orderNumber: 1, referenceDate: 1, updatedAt: 1 },
+    )
+      .sort({ updatedAt: -1 })
+      .limit(100)
+      .lean();
+    return NextResponse.json({ sheets: docs });
+  }
+
   const month = params.get("month");
   const company = (params.get("company") ?? "").trim();
   if (!isMonth(month) || !company) {

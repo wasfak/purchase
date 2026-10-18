@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, ArrowUpDown, Filter } from "lucide-react";
+import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, ArrowUpDown, Filter, ClipboardList, Copy } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -17,6 +17,11 @@ import {
   DaysBadge,
 } from "@/components/expiry/company-expiry-modal";
 import { FlyingSearchModal } from "@/components/orders/flying-search";
+import {
+  CompanyDetailsModal,
+  COMPANY_DETAIL_LABELS,
+  type CompanyDetails,
+} from "@/components/orders/company-details-modal";
 import { daysUntilExpiry, normalizeCompany, type ExpiryRow } from "@/lib/expiry";
 
 // The "Display exp" cell: when the saved expiry snapshot has items for this
@@ -60,6 +65,7 @@ function ExpiryCell({
 // How many days after the send date before we nudge you to review the order
 // ("tasfya" / settlement) — i.e. check whether it actually arrived.
 const REVIEW_AFTER_DAYS = 5;
+
 
 // Whether the user has manually marked this order as reviewed ("tasfya" done).
 function isReviewed(order: Order): boolean {
@@ -507,6 +513,12 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
   const [companiesWithNotes, setCompaniesWithNotes] = React.useState<
     Set<string>
   >(new Set());
+  // Normalized company key → its optional details (discount, rep number, …).
+  const [companyDetails, setCompanyDetails] = React.useState<
+    Map<string, CompanyDetails>
+  >(new Map());
+  // Company whose details popup is open, or null.
+  const [openDetails, setOpenDetails] = React.useState<string | null>(null);
   // Normalized company keys marked "auto display" on the تقفيلات page. Used to
   // reflect that toggle here as a read-only column.
   const [taqfeelatKeys, setTaqfeelatKeys] = React.useState<Set<string>>(
@@ -758,15 +770,26 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         if (!res.ok) return;
         const data = await res.json();
         const keys = new Set<string>();
+        const details = new Map<string, CompanyDetails>();
         for (const n of (data.notes ?? []) as {
           key?: string;
           entries?: unknown[];
+          details?: Record<string, string>;
         }[]) {
           if (n.key && Array.isArray(n.entries) && n.entries.length > 0) {
             keys.add(n.key);
           }
+          if (
+            n.key &&
+            COMPANY_DETAIL_LABELS.some(([k]) => (n.details?.[k] ?? "").trim())
+          ) {
+            details.set(n.key, n.details ?? {});
+          }
         }
-        if (active) setCompaniesWithNotes(keys);
+        if (active) {
+          setCompaniesWithNotes(keys);
+          setCompanyDetails(details);
+        }
       } catch {
         // No notes endpoint — just don't show indicators.
       }
@@ -1000,7 +1023,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     return (
       <th
         key={fc.key}
-        className="whitespace-nowrap px-2 py-1.5 font-semibold text-muted-foreground"
+        className="px-1 py-1.5 leading-tight font-semibold text-muted-foreground"
         aria-sort={
           activeSort
             ? activeSort === "asc"
@@ -1017,18 +1040,18 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
             type="button"
             onClick={() => toggleSort(fc.key)}
             className={cn(
-              "inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:text-foreground",
+              "inline-flex items-center gap-0.5 rounded px-0.5 py-0.5 text-left transition-colors hover:text-foreground",
               activeSort && "text-foreground",
             )}
             title={`Sort by ${fc.label}`}
           >
             {fc.label}
             {activeSort === "asc" ? (
-              <ArrowUp className="size-3.5" />
+              <ArrowUp className="size-3 shrink-0" />
             ) : activeSort === "desc" ? (
-              <ArrowDown className="size-3.5" />
+              <ArrowDown className="size-3 shrink-0" />
             ) : (
-              <ArrowUpDown className="size-3.5 opacity-40" />
+              <ArrowUpDown className="size-3 shrink-0 opacity-40" />
             )}
           </button>
           <button
@@ -1050,16 +1073,25 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
               );
             }}
             className={cn(
-              "grid size-6 shrink-0 place-items-center rounded transition-colors hover:bg-muted hover:text-foreground",
+              "grid size-5 shrink-0 place-items-center rounded transition-colors hover:bg-muted hover:text-foreground",
               filtered && "text-primary",
             )}
           >
-            <Filter className={cn("size-3.5", filtered && "fill-primary/20")} />
+            <Filter className={cn("size-3", filtered && "fill-primary/20")} />
           </button>
         </div>
       </th>
     );
   };
+
+  async function copyCompanyName(name: string) {
+    try {
+      await navigator.clipboard.writeText(name);
+      toast.success(`Copied: ${name}`);
+    } catch {
+      toast.error("Couldn't copy");
+    }
+  }
 
   function openAdd() {
     setForm(emptyForm());
@@ -1876,20 +1908,29 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
             </div>
           ) : (
           <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
-            <table className="w-full text-sm">
+            <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {COLUMNS.map((col) => filterHeader(filterColByKey.get(col.key)!))}
+                  {COLUMNS.map((col) => (
+                    <React.Fragment key={col.key}>
+                      {filterHeader(filterColByKey.get(col.key)!)}
+                      {col.key === "companyName" && (
+                        <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
+                          بيانات
+                        </th>
+                      )}
+                    </React.Fragment>
+                  ))}
                   {filterHeader(filterColByKey.get("_taqfeelat")!, true)}
                   {filterHeader(filterColByKey.get("_review")!)}
                   {filterHeader(filterColByKey.get("_exp")!)}
-                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
+                  <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
                     Auto Tasfya
                   </th>
-                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-muted-foreground">
+                  <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
                     Flying
                   </th>
-                  <th className="px-3 py-2.5" />
+                  <th className="px-1.5 py-1.5" />
                 </tr>
               </thead>
               <tbody>
@@ -1923,12 +1964,12 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                         const editable = EDITABLE_FIELDS.has(col.key);
                         const raw = order[col.key] ?? "";
                         return (
+                          <React.Fragment key={col.key}>
                           <td
-                            key={col.key}
                             className={cn(
-                              "px-3 py-2 align-top",
+                              "px-1.5 py-1.5 align-top",
                               col.type === "textarea"
-                                ? "max-w-[16rem] whitespace-pre-wrap"
+                                ? "max-w-[12rem] whitespace-pre-wrap"
                                 : "whitespace-nowrap",
                               col.key === "companyName" && "font-medium",
                             )}
@@ -1994,7 +2035,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                                 {cellValue(col, raw, overdue)}
                               </button>
                             ) : col.key === "companyName" ? (
-                              <span className="flex items-center gap-2">
+                              <span className="flex flex-wrap items-center gap-1">
                                 <Link
                                   href={`/company/${encodeURIComponent(raw)}`}
                                   dir="auto"
@@ -2011,6 +2052,15 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                                     aria-label="Has notes"
                                   />
                                 )}
+                                <button
+                                  type="button"
+                                  onClick={() => copyCompanyName(raw)}
+                                  className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                                  title="Copy company name"
+                                  aria-label="Copy company name"
+                                >
+                                  <Copy className="size-3.5" />
+                                </button>
                                 {noNeed && (
                                   <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
                                     <Ban className="size-3" />
@@ -2022,9 +2072,28 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                               cellValue(col, raw, overdue)
                             )}
                           </td>
+                          {col.key === "companyName" && (
+                            <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => setOpenDetails(raw)}
+                                className={cn(
+                                  "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium transition-colors",
+                                  companyDetails.has(normalizeCompany(raw))
+                                    ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+                                    : "border-border text-muted-foreground hover:bg-muted",
+                                )}
+                                title="Company details"
+                              >
+                                <ClipboardList className="size-3" />
+                                بيانات
+                              </button>
+                            </td>
+                          )}
+                          </React.Fragment>
                         );
                       })}
-                      <td className="px-3 py-2 align-top text-center whitespace-nowrap">
+                      <td className="px-1.5 py-1.5 align-top text-center whitespace-nowrap">
                         {(() => {
                           const key = normalizeCompany(order.companyName ?? "");
                           if (!taqfeelatKeys.has(key))
@@ -2063,14 +2132,14 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           );
                         })()}
                       </td>
-                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
                         <ReviewCell
                           order={order}
                           onToggle={() => toggleReviewed(order)}
                           busy={busy}
                         />
                       </td>
-                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
                         <ExpiryCell
                           rows={expiryByCompany.get(
                             normalizeCompany(order.companyName ?? ""),
@@ -2079,7 +2148,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           onOpen={() => setOpenExpiry(order.companyName)}
                         />
                       </td>
-                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => {
@@ -2093,13 +2162,13 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                             )}&company=${encodeURIComponent(c)}`;
                             window.open(url, "_blank", "noopener");
                           }}
-                          className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
                           title="Run Auto Tasfya for this company in a new tab"
                         >
                           <Calculator className="size-3.5" /> Tasfya
                         </button>
                       </td>
-                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => {
@@ -2113,14 +2182,14 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                             )}&company=${encodeURIComponent(c)}`;
                             window.open(url, "_blank", "noopener");
                           }}
-                          className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-700 transition-colors hover:bg-sky-500/20 dark:text-sky-400"
+                          className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 transition-colors hover:bg-sky-500/20 dark:text-sky-400"
                           title="Open the Flying tasfya worksheet for this company in a new tab"
                         >
                           <Plane className="size-3.5" /> Flying
                         </button>
                       </td>
-                      <td className="px-3 py-2 align-top">
-                        <div className="flex items-center gap-2">
+                      <td className="px-1.5 py-1.5 align-top">
+                        <div className="flex items-center gap-1.5">
                         <input
                           type="month"
                           value={order.month?.trim() || ""}
@@ -2134,7 +2203,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                               : "Unassigned — pick a month to file this order"
                           }
                           className={cn(
-                            "h-8 rounded border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50",
+                            "h-7 w-[7.5rem] rounded border bg-background px-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50",
                             order.month?.trim()
                               ? "border-border"
                               : "border-amber-500/60 text-amber-700 dark:text-amber-400",
@@ -2331,6 +2400,14 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
           rows={expiryByCompany.get(normalizeCompany(openExpiry)) ?? []}
           today={today}
           onClose={() => setOpenExpiry(null)}
+        />
+      )}
+
+      {openDetails && (
+        <CompanyDetailsModal
+          company={openDetails}
+          details={companyDetails.get(normalizeCompany(openDetails))}
+          onClose={() => setOpenDetails(null)}
         />
       )}
 

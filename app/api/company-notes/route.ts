@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
-import { CompanyNote } from "@/lib/models/CompanyNote";
+import {
+  COMPANY_DETAIL_FIELDS,
+  CompanyNote,
+} from "@/lib/models/CompanyNote";
 import { normalizeCompany } from "@/lib/expiry";
 
 // GET /api/company-notes?company=<name> — the notes for one company, or null.
@@ -31,8 +34,9 @@ export async function GET(request: Request) {
   return NextResponse.json({ notes });
 }
 
-// POST /api/company-notes — upsert a company's note entries.
-// Body: { company, entries: [{ text, at }] }
+// POST /api/company-notes — upsert a company's note entries and/or details.
+// Body: { company, entries?: [{ text, at }], details?: { discount, … } }
+// Only the parts sent are updated, so saving notes never wipes details.
 export async function POST(request: Request) {
   const { userId } = await auth();
   if (!userId) {
@@ -45,19 +49,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing company" }, { status: 400 });
   }
   const key = normalizeCompany(company);
-  const entries = Array.isArray(body?.entries)
-    ? body.entries
-        .map((e: Record<string, unknown>) => ({
-          text: String(e?.text ?? ""),
-          at: Number(e?.at) || Date.now(),
-        }))
-        .filter((e: { text: string }) => e.text.trim())
-    : [];
+  const set: Record<string, unknown> = { companyName: company };
+  if (Array.isArray(body?.entries)) {
+    set.entries = body.entries
+      .map((e: Record<string, unknown>) => ({
+        text: String(e?.text ?? ""),
+        at: Number(e?.at) || Date.now(),
+      }))
+      .filter((e: { text: string }) => e.text.trim());
+  }
+  if (body?.details && typeof body.details === "object") {
+    for (const f of COMPANY_DETAIL_FIELDS) {
+      if (f in body.details) {
+        set[`details.${f}`] = String(body.details[f] ?? "").trim();
+      }
+    }
+  }
 
   await connectDB();
   await CompanyNote.updateOne(
     { ownerId: userId, key },
-    { $set: { companyName: company, entries } },
+    { $set: set },
     { upsert: true },
   );
 

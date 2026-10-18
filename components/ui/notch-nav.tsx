@@ -22,6 +22,7 @@ import {
   BarChart3,
   LineChart,
   Snowflake,
+  Plane,
 } from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
@@ -45,6 +46,7 @@ type IconName =
   | "alama"
   | "analytics"
   | "winter"
+  | "flying"
   | "fahmy";
 
 type Item = {
@@ -117,6 +119,7 @@ export function NotchNav({
     alama: Tag,
     analytics: BarChart3,
     winter: Snowflake,
+    flying: Plane,
     fahmy: LineChart,
   };
 

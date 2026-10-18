@@ -27,6 +27,7 @@ import { parseSupplyOrders } from "@/lib/tasfya/supplyOrders";
 import { bonusPercent } from "@/lib/tasfya/report";
 import {
   DEFAULT_DISTRIBUTORS,
+  FLYING_PENDING_KEY,
   parseCell,
   effRemaining,
   fmtBalance,
@@ -448,9 +449,12 @@ export function FlyingClient() {
     ) {
       return;
     }
+    await importText(await file.text());
+  }
+
+  async function importText(text: string) {
     setImporting(true);
     try {
-      const text = await file.text();
       const orders = parseSupplyOrders(parseHtmlTable(text));
       const items = orders.flatMap((o) => o.items);
       if (items.length === 0) {
@@ -492,6 +496,23 @@ export function FlyingClient() {
       setImporting(false);
     }
   }
+
+  // A file handed over from the /flying start page: import it once the (empty)
+  // sheet has loaded.
+  const pendingHandled = React.useRef(false);
+  React.useEffect(() => {
+    if (loading || pendingHandled.current) return;
+    pendingHandled.current = true;
+    let text: string | null = null;
+    try {
+      text = sessionStorage.getItem(FLYING_PENDING_KEY);
+      sessionStorage.removeItem(FLYING_PENDING_KEY);
+    } catch {
+      // storage unavailable — nothing was handed over
+    }
+    if (text && rows.length === 0) void importText(text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   function setCell(rowIndex: number, colId: string, value: string) {
     setRows((prev) =>

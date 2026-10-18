@@ -28,6 +28,7 @@ type NavIcon =
   | "alama"
   | "analytics"
   | "winter"
+  | "flying"
   | "fahmy";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
@@ -92,6 +93,7 @@ export default async function RootLayout({
           href: "/auto-tasfya",
           icon: "autotasfya",
         },
+        { value: "flying", label: "Flying", href: "/flying", icon: "flying" },
         {
           value: "alama",
           label: "علامة",

@@ -5,6 +5,10 @@
 // base quantity is deducted from the item's remaining (الباقى); the bounce is
 // tracked separately and shown as a percentage of the base.
 
+/** sessionStorage key the /flying start page uses to hand an uploaded htm's
+ *  text to the worksheet it opens, which imports it on load. */
+export const FLYING_PENDING_KEY = "flying-pending-import";
+
 /** The distributor columns from the paper template, used to seed a new sheet.
  *  All of these are renamable/removable and more can be added on the fly. */
 export const DEFAULT_DISTRIBUTORS: string[] = [
