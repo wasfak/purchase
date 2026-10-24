@@ -73,3 +73,40 @@ export function parseSupplyOrders(matrix: string[][]): SupplyOrder[] {
 
   return orders.filter((o) => o.items.length > 0);
 }
+
+/**
+ * Combines every supply order whose supplier matches `company` EXACTLY (trimmed)
+ * into one settlement input: all their items, their order numbers, and the
+ * earliest order date as the cutoff. Shared by the single-company data route and
+ * the batch (all companies) run page so both match orders the same way.
+ */
+export function combineCompanyOrders(
+  orders: SupplyOrder[],
+  company: string,
+): {
+  matched: number;
+  orderNumbers: string[];
+  referenceDate: string;
+  items: SupplyOrderItem[];
+} {
+  const target = company.trim();
+  const matched = orders.filter((o) => (o.supplier ?? "").trim() === target);
+
+  const items: SupplyOrderItem[] = [];
+  const orderNumbers: string[] = [];
+  let referenceDate = "";
+  for (const o of matched) {
+    if (o.orderNumber) orderNumbers.push(o.orderNumber);
+    if (o.date && (referenceDate === "" || o.date < referenceDate)) {
+      referenceDate = o.date;
+    }
+    for (const it of o.items ?? []) {
+      items.push({
+        code: String(it.code ?? ""),
+        name: String(it.name ?? ""),
+        order: Number(it.order) || 0,
+      });
+    }
+  }
+  return { matched: matched.length, orderNumbers, referenceDate, items };
+}

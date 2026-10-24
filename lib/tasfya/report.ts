@@ -173,7 +173,10 @@ export function computeReport(
     const bonus = agg?.bonus ?? 0;
     return {
       code: item.code,
-      name: item.name,
+      // Prefer the current item name from the stock file: the supply order
+      // keeps the name as it was when ordered, so a #B# / #C.C# / #NA# tag added
+      // in SofTech afterwards would otherwise be missing here.
+      name: stock.byCode.get(item.code)?.name || item.name,
       supplier: agg?.supplier ?? "",
       order: item.order,
       received,

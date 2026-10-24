@@ -3,7 +3,8 @@ import { auth } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
 import { AutoTasfyaUpload } from "@/lib/models/AutoTasfyaUpload";
-import type { PurchaseLine, SupplyOrder, SupplyOrderItem } from "@/lib/tasfya/types";
+import { combineCompanyOrders } from "@/lib/tasfya/supplyOrders";
+import type { PurchaseLine, SupplyOrder } from "@/lib/tasfya/types";
 
 const isMonth = (v: unknown): v is string =>
   typeof v === "string" && /^\d{4}-\d{2}$/.test(v);
@@ -12,6 +13,10 @@ const isMonth = (v: unknown): v is string =>
 // Returns the settlement inputs for one company: its combined ordered items
 // (across all of its pos orders), the earliest order date as the cutoff, and the
 // full buy lines for the month. Stock is NOT here — it lives on the client (PC).
+//
+// GET /api/auto-tasfya/data?month=YYYY-MM&all=1
+// Returns every pos order + the buy lines for the month in one go, so the batch
+// page can settle many companies without re-downloading the lines per company.
 export async function GET(request: Request) {
   const { userId } = await auth();
   if (!userId) {
@@ -20,8 +25,9 @@ export async function GET(request: Request) {
 
   const params = new URL(request.url).searchParams;
   const month = params.get("month");
+  const all = params.get("all") === "1";
   const company = (params.get("company") ?? "").trim();
-  if (!isMonth(month) || !company) {
+  if (!isMonth(month) || (!all && !company)) {
     return NextResponse.json({ error: "Invalid month/company" }, { status: 400 });
   }
 
@@ -34,37 +40,27 @@ export async function GET(request: Request) {
   const allOrders = doc?.pos?.orders ?? [];
   const lines = doc?.buy?.lines ?? [];
 
-  // All pos orders whose supplier matches the company EXACTLY (trimmed).
-  const target = company;
-  const matched = allOrders.filter((o) => (o.supplier ?? "").trim() === target);
-
-  // Combine items across the matched orders; earliest date = the cutoff.
-  const items: SupplyOrderItem[] = [];
-  const orderNumbers: string[] = [];
-  let referenceDate = "";
-  for (const o of matched) {
-    if (o.orderNumber) orderNumbers.push(o.orderNumber);
-    if (o.date && (referenceDate === "" || o.date < referenceDate)) {
-      referenceDate = o.date;
-    }
-    for (const it of o.items ?? []) {
-      items.push({
-        code: String(it.code ?? ""),
-        name: String(it.name ?? ""),
-        order: Number(it.order) || 0,
-      });
-    }
+  if (all) {
+    return NextResponse.json({
+      month,
+      hasPos: allOrders.length > 0,
+      hasBuy: lines.length > 0,
+      orders: allOrders,
+      lines,
+    });
   }
+
+  const combined = combineCompanyOrders(allOrders, company);
 
   return NextResponse.json({
     company,
     month,
     hasPos: allOrders.length > 0,
     hasBuy: lines.length > 0,
-    matchedOrders: matched.length,
-    orderNumbers,
-    referenceDate,
-    items,
+    matchedOrders: combined.matched,
+    orderNumbers: combined.orderNumbers,
+    referenceDate: combined.referenceDate,
+    items: combined.items,
     lines,
   });
 }

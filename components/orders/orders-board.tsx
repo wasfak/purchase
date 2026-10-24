@@ -23,6 +23,53 @@ import {
   type CompanyDetails,
 } from "@/components/orders/company-details-modal";
 import { daysUntilExpiry, normalizeCompany, type ExpiryRow } from "@/lib/expiry";
+import { isReviewDue, isReviewed, reviewStatus } from "@/lib/order-review";
+import { firstReceivedBySupplier, type ReceivedDate } from "@/lib/received-dates";
+import type { PurchaseLine, StockItem, SupplyOrder } from "@/lib/tasfya/types";
+
+// The "Received" cell: one line per distributor with the first date it
+// delivered this company's items (from the month's ملف فواتير الشراء).
+// Invoice numbers are shown only when `showInvoices` (non-important orders).
+// `rows` only counts deliveries on/after the order's send date.
+function ReceivedCell({
+  rows,
+  showInvoices,
+}: {
+  rows?: ReceivedDate[];
+  showInvoices: boolean;
+}) {
+  if (!rows || rows.length === 0) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  return (
+    <div className="flex flex-col gap-0.5">
+      {rows.map((r) => {
+        const [, mm, dd] = r.date.split("/");
+        return (
+          <span
+            key={r.supplier}
+            className="inline-flex items-center gap-1.5"
+            title={`First received from ${r.supplier} on ${r.date}${
+              showInvoices && r.invoices.length
+                ? ` — invoice ${r.invoices.join(", ")}`
+                : ""
+            }`}
+          >
+            <span className="font-medium tabular-nums">
+              {dd}/{mm}
+            </span>
+            <span dir="auto">{r.supplier}</span>
+            {showInvoices && r.invoices.length > 0 && (
+              <span className="font-mono tabular-nums">
+                {r.invoices.join(", ")}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 // The "Display exp" cell: when the saved expiry snapshot has items for this
 // company, a clickable pill (count + soonest) that opens the popup; otherwise a
@@ -60,42 +107,6 @@ function ExpiryCell({
       )}
     </button>
   );
-}
-
-// How many days after the send date before we nudge you to review the order
-// ("tasfya" / settlement) — i.e. check whether it actually arrived.
-const REVIEW_AFTER_DAYS = 5;
-
-
-// Whether the user has manually marked this order as reviewed ("tasfya" done).
-function isReviewed(order: Order): boolean {
-  return (order.reviewed ?? "").trim() === "yes";
-}
-
-// The review reminder state for one order, derived from its send date:
-//  - "none":     no send date yet, nothing to review.
-//  - "reviewed": the user manually ticked it off — settled (green).
-//  - "done":     the order is finished, so it's already settled.
-//  - "due":      REVIEW_AFTER_DAYS+ days have passed since sending — remind now.
-//  - "waiting":  sent, but the review day hasn't arrived yet (still counting).
-// `days` is how many days remain until review (waiting) or have passed (due).
-function reviewStatus(order: Order): {
-  state: "none" | "reviewed" | "done" | "due" | "waiting";
-  days: number;
-} {
-  const send = (order.sendDate ?? "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(send)) return { state: "none", days: 0 };
-  if (isReviewed(order)) return { state: "reviewed", days: 0 };
-  if ((order.finished ?? "").trim()) return { state: "done", days: 0 };
-
-  const sent = new Date(`${send}T00:00:00`);
-  const due = new Date(sent);
-  due.setDate(due.getDate() + REVIEW_AFTER_DAYS);
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const diffDays = Math.round((now.getTime() - due.getTime()) / 86_400_000);
-  if (diffDays >= 0) return { state: "due", days: diffDays };
-  return { state: "waiting", days: -diffDays };
 }
 
 // The "Review tasfya" cell: reminds you to check an order once REVIEW_AFTER_DAYS
@@ -362,32 +373,36 @@ type OrderFilter =
   | "sent"
   | "noNeed"
   | "important"
+  | "notImportant"
   | "dueSoon"
   | "reviewDue"
   | "noOrderDay"
+  | "received"
+  | "notReceived"
   | "hideFinished";
+
+// Board-level data some filters need (not on the order itself).
+type FilterCtx = { hasReceived: (o: Order) => boolean };
 
 // The pickable filters, in display order, each with a label and its predicate.
 const FILTER_OPTIONS: {
   value: OrderFilter;
   label: string;
-  test: (o: Order) => boolean;
+  test: (o: Order, ctx: FilterCtx) => boolean;
 }[] = [
   { value: "notStarted", label: "Not started yet", test: isNotStarted },
   { value: "sent", label: "Sent", test: isSent },
   { value: "noNeed", label: "No need", test: isNoNeed },
   { value: "important", label: "Important", test: isImportant },
+  { value: "notImportant", label: "Not important", test: (o) => !isImportant(o) },
   { value: "dueSoon", label: "Due soon", test: isDueSoon },
   { value: "reviewDue", label: "Review tasfya", test: isReviewDue },
   { value: "noOrderDay", label: "No order date", test: hasNoOrderDay },
+  // From the month's Buy file (see the "Received" column).
+  { value: "received", label: "Received", test: (o, c) => c.hasReceived(o) },
+  { value: "notReceived", label: "Not received", test: (o, c) => !c.hasReceived(o) },
   { value: "hideFinished", label: "Hide finished", test: (o) => !isFinished(o) },
 ];
-
-// An order needs a "review tasfya" nudge when REVIEW_AFTER_DAYS have passed
-// since it was sent and it isn't finished yet.
-function isReviewDue(order: Order): boolean {
-  return reviewStatus(order).state === "due";
-}
 
 // A column the Excel-style header menu can sort + filter: `value` is the text
 // shown in the filter's checkbox list, `sort` a comparable key (null = blank,
@@ -601,6 +616,9 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     savedAt: number;
   } | null>(null);
   const [stockBusy, setStockBusy] = React.useState(false);
+  // The stock items themselves — used to tie Buy-file codes to a company for
+  // the "Received" column.
+  const [stockItems, setStockItems] = React.useState<StockItem[]>([]);
 
   React.useEffect(() => {
     let active = true;
@@ -612,6 +630,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
           count: s.items.length,
           savedAt: s.savedAt,
         });
+        setStockItems(s.items);
       }
     })();
     return () => {
@@ -645,6 +664,20 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         return !m || m === month;
       }),
     [orders, month],
+  );
+
+  // This month's companies waiting on "Review tasfya" — the "Tasfya all" button
+  // opens one batch tab that settles every one of them.
+  const reviewDueCompanies = React.useMemo(
+    () => [
+      ...new Set(
+        visibleOrders
+          .filter(isReviewDue)
+          .map((o) => (o.companyName ?? "").trim())
+          .filter(Boolean),
+      ),
+    ],
+    [visibleOrders],
   );
 
   // The newest month (other than the one selected) that actually has orders —
@@ -832,6 +865,61 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     };
   }, []);
 
+  // The selected month's Auto Tasfya uploads (ملف فواتير الشراء + supply
+  // orders), for the "Received" column. Refetched when the month changes.
+  const [tasfyaData, setTasfyaData] = React.useState<{
+    orders: SupplyOrder[];
+    lines: PurchaseLine[];
+  }>({ orders: [], lines: [] });
+  React.useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/auto-tasfya/data?month=${encodeURIComponent(month)}&all=1`,
+        );
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (active) {
+          setTasfyaData({ orders: data.orders ?? [], lines: data.lines ?? [] });
+        }
+      } catch {
+        // No uploads for this month — the column just shows dashes.
+        if (active) setTasfyaData({ orders: [], lines: [] });
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [month]);
+
+  // Order id → first received date per distributor (Buy file), counting only
+  // deliveries on or after the order's send date. No send date = nothing.
+  const receivedByOrder = React.useMemo(() => {
+    const m = new Map<string, ReceivedDate[]>();
+    if (tasfyaData.lines.length === 0) return m;
+    for (const o of visibleOrders) {
+      const name = (o.companyName ?? "").trim();
+      const send = (o.sendDate ?? "").trim();
+      if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(send)) continue;
+      m.set(
+        o._id,
+        firstReceivedBySupplier(
+          name,
+          tasfyaData.orders,
+          tasfyaData.lines,
+          stockItems,
+          send.replace(/-/g, "/"),
+        ),
+      );
+    }
+    return m;
+  }, [visibleOrders, tasfyaData, stockItems]);
+  const receivedFor = React.useCallback(
+    (o: Order): ReceivedDate[] => receivedByOrder.get(o._id) ?? [],
+    [receivedByOrder],
+  );
+
   // Expiry items grouped by normalized company name.
   const expiryByCompany = React.useMemo(() => {
     const m = new Map<string, ExpiryRow[]>();
@@ -856,6 +944,9 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     const expCount = (o: Order) =>
       expiryByCompany.get(normalizeCompany(o.companyName ?? ""))?.length ?? 0;
     const review = (o: Order) => REVIEW_LABELS[reviewStatus(o).state];
+    // Earliest received date across all distributors ("YYYY/MM/DD", or "").
+    const firstReceived = (o: Order) =>
+      receivedFor(o)[0]?.date ?? "";
     return [
       ...COLUMNS.map((col) => ({
         key: col.key,
@@ -881,8 +972,14 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         value: (o) => (expCount(o) > 0 ? "Has expiring" : ""),
         sort: (o) => expCount(o) || null,
       },
+      {
+        key: "_received",
+        label: "Received",
+        value: firstReceived,
+        sort: (o) => firstReceived(o) || null,
+      },
     ];
-  }, [taqfeelatKeys, taqfeelatDoneKeys, expiryByCompany]);
+  }, [taqfeelatKeys, taqfeelatDoneKeys, expiryByCompany, receivedFor]);
 
   const filterColByKey = React.useMemo(
     () => new Map(filterCols.map((c) => [c.key, c])),
@@ -918,7 +1015,10 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     // Apply every selected filter — a row must pass all of them (AND).
     const active = FILTER_OPTIONS.filter((f) => filters.has(f.value));
     if (active.length > 0) {
-      rows = rows.filter((o) => active.every((f) => f.test(o)));
+      const ctx: FilterCtx = {
+        hasReceived: (o) => receivedFor(o).length > 0,
+      };
+      rows = rows.filter((o) => active.every((f) => f.test(o, ctx)));
     }
     const colActive: [FilterCol, Set<string>][] = [];
     for (const [key, allowed] of Object.entries(colFilters)) {
@@ -951,7 +1051,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
       });
     }
     return rows;
-  }, [visibleOrders, filters, colFilters, filterColByKey, search, sort]);
+  }, [visibleOrders, filters, colFilters, filterColByKey, search, sort, receivedFor]);
 
   // Cycle a column's sort: asc → desc → off (back to natural order).
   const toggleSort = (key: string) =>
@@ -1496,6 +1596,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
       }
       await saveStock(file.name, items);
       setStockInfo({ fileName: file.name, count: items.length, savedAt: Date.now() });
+      setStockItems(items);
       toast.success(
         `Saved stock on this PC: ${items.length.toLocaleString("en-US")} items`,
       );
@@ -1511,6 +1612,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     try {
       await clearStock();
       setStockInfo(null);
+      setStockItems([]);
       toast.success("Stock removed from this PC.");
     } catch {
       toast.error("Couldn't remove the stock file.");
@@ -1557,6 +1659,24 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         title="Search all flying-tasfya sheets by code or product name"
       >
         <Plane /> Search Flying
+      </Button>
+
+      <Button
+        type="button"
+        variant="outline"
+        disabled={reviewDueCompanies.length === 0}
+        onClick={() => {
+          // Only the month goes in the URL — the batch page finds the
+          // companies itself (long Arabic names blew the header limit, 431).
+          window.open(
+            `/auto-tasfya/batch?month=${encodeURIComponent(month)}`,
+            "_blank",
+            "noopener",
+          );
+        }}
+        title="Open one tab that runs Auto Tasfya for every Review tasfya order this month"
+      >
+        <Calculator /> Tasfya all ({reviewDueCompanies.length})
       </Button>
 
       {/* Store-wide stock — saved on this PC, sliced per company at tasfya time. */}
@@ -1924,6 +2044,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                   {filterHeader(filterColByKey.get("_taqfeelat")!, true)}
                   {filterHeader(filterColByKey.get("_review")!)}
                   {filterHeader(filterColByKey.get("_exp")!)}
+                  {filterHeader(filterColByKey.get("_received")!)}
                   <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
                     Auto Tasfya
                   </th>
@@ -2146,6 +2267,12 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           )}
                           today={today}
                           onOpen={() => setOpenExpiry(order.companyName)}
+                        />
+                      </td>
+                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                        <ReceivedCell
+                          rows={receivedFor(order)}
+                          showInvoices={!isImportant(order)}
                         />
                       </td>
                       <td className="px-1.5 py-1.5 align-top whitespace-nowrap">

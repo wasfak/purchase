@@ -190,10 +190,20 @@ type DataResponse = {
   lines: PurchaseLine[];
 };
 
-export function RunClient() {
+// `month` / `company` come from the URL on the standalone run page; the batch
+// page passes them as props instead and sets `embedded` to drop the page chrome.
+export function RunClient({
+  month: monthProp,
+  company: companyProp,
+  embedded = false,
+}: {
+  month?: string;
+  company?: string;
+  embedded?: boolean;
+} = {}) {
   const params = useSearchParams();
-  const month = params.get("month") ?? "";
-  const company = (params.get("company") ?? "").trim();
+  const month = monthProp ?? params.get("month") ?? "";
+  const company = (companyProp ?? params.get("company") ?? "").trim();
 
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -840,6 +850,8 @@ export function RunClient() {
   };
 
   const hasStock = stockCount !== null;
+  // Embedded in the batch page (which is already the page's <main>).
+  const Wrapper = embedded ? "section" : "main";
   const activeFilters =
     Object.keys(filters).length +
     (search.trim() ? 1 : 0) +
@@ -850,7 +862,13 @@ export function RunClient() {
     (showHidden ? 1 : 0);
 
   return (
-    <main dir="ltr" className="mx-auto w-full max-w-[120rem] space-y-4 p-6">
+    <Wrapper
+      dir="ltr"
+      className={cn(
+        "w-full space-y-4",
+        embedded ? "pt-2" : "mx-auto max-w-[120rem] p-6",
+      )}
+    >
       <div className="flex flex-wrap items-end justify-between gap-3 border-b pb-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight" dir="auto">
@@ -1531,7 +1549,7 @@ export function RunClient() {
           Nothing to settle for {company} in {monthLabel(month)}.
         </div>
       )}
-    </main>
+    </Wrapper>
   );
 }
 
