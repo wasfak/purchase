@@ -327,6 +327,8 @@ export function ReviewWorkspace({
   const [hideIgnored, setHideIgnored] = React.useState(false);
   const [hideDone, setHideDone] = React.useState(false);
   const [hideNoNeed, setHideNoNeed] = React.useState(false);
+  // Show only rows marked done whose Status date is LATE_AFTER_DAYS+ old.
+  const [lateOnly, setLateOnly] = React.useState(false);
 
   // Which columns the user has chosen to hide from the table. Persisted per
   // browser under `prefsKey` so the choice survives reloads. Loaded in an effect
@@ -463,16 +465,50 @@ export function ReviewWorkspace({
     [rows],
   );
 
-  // Rows shown in the table: optionally drop ignored and/or done rows entirely.
+  // Re-read the clock hourly so a tab left open overnight starts flagging rows
+  // that crossed the late threshold while it sat there.
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const handle = setInterval(() => setNow(Date.now()), 60 * 60 * 1000);
+    return () => clearInterval(handle);
+  }, []);
+
+  // A row is late when it was marked done (i.e. ordered) at least
+  // LATE_AFTER_DAYS ago yet is still in the sheet — meaning it never arrived.
+  // Ignored rows are excluded: nothing was ordered, so they're expected to stay.
+  const isLate = React.useCallback(
+    (id: string) => {
+      const at = statusAt.get(id);
+      return (
+        at != null && completed.has(id) && daysSince(at, now) >= LATE_AFTER_DAYS
+      );
+    },
+    [statusAt, completed, now],
+  );
+
+  // Rows shown in the table: optionally drop ignored and/or done rows entirely,
+  // or narrow to just the late ones ("Late only" overrides "Hide done", since
+  // every late row is a done row).
   const visibleDataRows = React.useMemo(
     () =>
-      dataRows.filter(
-        (r) =>
-          (!hideIgnored || !ignored.has(r.__id)) &&
-          (!hideDone || !completed.has(r.__id)) &&
-          (!hideNoNeed || category.get(r.__id) !== "no need"),
+      dataRows.filter((r) =>
+        lateOnly
+          ? isLate(r.__id)
+          : (!hideIgnored || !ignored.has(r.__id)) &&
+            (!hideDone || !completed.has(r.__id)) &&
+            (!hideNoNeed || category.get(r.__id) !== "no need"),
       ),
-    [dataRows, hideIgnored, hideDone, hideNoNeed, ignored, completed, category],
+    [
+      dataRows,
+      lateOnly,
+      isLate,
+      hideIgnored,
+      hideDone,
+      hideNoNeed,
+      ignored,
+      completed,
+      category,
+    ],
   );
 
   // The actual header key that names the supplier/company for each row, so we
@@ -547,27 +583,6 @@ export function ReviewWorkspace({
       return next;
     });
   }, []);
-
-  // Re-read the clock hourly so a tab left open overnight starts flagging rows
-  // that crossed the late threshold while it sat there.
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const handle = setInterval(() => setNow(Date.now()), 60 * 60 * 1000);
-    return () => clearInterval(handle);
-  }, []);
-
-  // A row is late when it was marked done (i.e. ordered) at least
-  // LATE_AFTER_DAYS ago yet is still in the sheet — meaning it never arrived.
-  // Ignored rows are excluded: nothing was ordered, so they're expected to stay.
-  const isLate = React.useCallback(
-    (id: string) => {
-      const at = statusAt.get(id);
-      return (
-        at != null && completed.has(id) && daysSince(at, now) >= LATE_AFTER_DAYS
-      );
-    },
-    [statusAt, completed, now],
-  );
 
   // Inject the mark date (formatted YYYY-MM-DD so it sorts correctly), the late
   // flag and the category into each row so the table can filter/sort/search on
@@ -1154,9 +1169,11 @@ export function ReviewWorkspace({
       .map((r, i) => ({ r, i }))
       .filter(
         ({ i }) =>
-          !ignored.has(String(i)) &&
-          (!hideDone || !completed.has(String(i))) &&
-          (!hideNoNeed || category.get(String(i)) !== "no need"),
+          lateOnly
+            ? isLate(String(i))
+            : !ignored.has(String(i)) &&
+              (!hideDone || !completed.has(String(i))) &&
+              (!hideNoNeed || category.get(String(i)) !== "no need"),
       )
       .map(({ r }) => {
         const obj: Record<string, Cell> = {};
@@ -1941,6 +1958,15 @@ export function ReviewWorkspace({
               >
                 <EyeOff />
                 {hideDone ? "Show done" : "Hide done"}
+              </Button>
+            )}
+            {(completedCount > 0 || lateOnly) && (
+              <Button
+                variant={lateOnly ? "destructive" : "outline"}
+                onClick={() => setLateOnly((v) => !v)}
+              >
+                <Clock />
+                {lateOnly ? "Show all" : `Late only (${lateCount})`}
               </Button>
             )}
             {[...category.values()].includes("no need") && (
