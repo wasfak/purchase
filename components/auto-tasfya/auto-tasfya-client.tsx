@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { currentMonthStr, monthLabel } from "@/lib/dates";
 import { parseHtmlTable } from "@/lib/tasfya/parseTable";
 import { parseSupplyOrders } from "@/lib/tasfya/supplyOrders";
-import { parsePurchases } from "@/lib/tasfya/purchases";
+import { dropExcludedLines, parsePurchases } from "@/lib/tasfya/purchases";
 
 const isHtml = (f: File) => /\.html?$/i.test(f.name);
 
@@ -115,7 +115,9 @@ export function AutoTasfyaClient() {
         const text = await readFileAsText(file);
         const matrix = parseHtmlTable(text);
         const data =
-          kind === "pos" ? parseSupplyOrders(matrix) : parsePurchases(matrix);
+          kind === "pos"
+            ? parseSupplyOrders(matrix)
+            : dropExcludedLines(parsePurchases(matrix));
         if (data.length === 0) {
           toast.warning(`No ${kind === "pos" ? "orders" : "lines"} found in ${file.name}.`);
         }

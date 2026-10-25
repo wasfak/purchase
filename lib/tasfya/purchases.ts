@@ -13,6 +13,22 @@ function toNumber(value: string): number {
   return Number((value || "0").replace(/,/g, "")) || 0;
 }
 
+/** Distributors whose invoices never count in tasfya — their lines are dropped
+ * on upload and when stored lines are read back. Matched loosely (ي/ى, spaces). */
+const EXCLUDED_COMPANIES = ["صيدلية العنانى"];
+
+const normCompany = (s: string) => s.replace(/ى/g, "ي").replace(/\s+/g, "");
+
+export function isExcludedCompany(company: string): boolean {
+  const c = normCompany(company);
+  return EXCLUDED_COMPANIES.some((x) => c.includes(normCompany(x)));
+}
+
+/** Drops purchase lines from EXCLUDED_COMPANIES. */
+export function dropExcludedLines(lines: PurchaseLine[]): PurchaseLine[] {
+  return lines.filter((l) => !isExcludedCompany(l.company));
+}
+
 /**
  * Parses the "سجل فواتير شراء الأصناف" (purchase invoices register) table.
  *

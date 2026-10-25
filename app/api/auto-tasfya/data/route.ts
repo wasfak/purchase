@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
 import { AutoTasfyaUpload } from "@/lib/models/AutoTasfyaUpload";
+import { dropExcludedLines } from "@/lib/tasfya/purchases";
 import { combineCompanyOrders } from "@/lib/tasfya/supplyOrders";
 import type { PurchaseLine, SupplyOrder } from "@/lib/tasfya/types";
 
@@ -38,7 +39,8 @@ export async function GET(request: Request) {
   }>();
 
   const allOrders = doc?.pos?.orders ?? [];
-  const lines = doc?.buy?.lines ?? [];
+  // Also filtered here so months uploaded before the exclusion are covered.
+  const lines = dropExcludedLines(doc?.buy?.lines ?? []);
 
   if (all) {
     return NextResponse.json({
