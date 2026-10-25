@@ -29,15 +29,9 @@ import type { PurchaseLine, StockItem, SupplyOrder } from "@/lib/tasfya/types";
 
 // The "Received" cell: one line per distributor with the first date it
 // delivered this company's items (from the month's ملف فواتير الشراء).
-// Invoice numbers are shown only when `showInvoices` (non-important orders).
-// `rows` only counts deliveries on/after the order's send date.
-function ReceivedCell({
-  rows,
-  showInvoices,
-}: {
-  rows?: ReceivedDate[];
-  showInvoices: boolean;
-}) {
+// `rows` only counts deliveries on/after the order's send date, and is empty
+// for important orders.
+function ReceivedCell({ rows }: { rows?: ReceivedDate[] }) {
   if (!rows || rows.length === 0) {
     return <span className="text-muted-foreground">—</span>;
   }
@@ -50,7 +44,7 @@ function ReceivedCell({
             key={r.supplier}
             className="inline-flex items-center gap-1.5"
             title={`First received from ${r.supplier} on ${r.date}${
-              showInvoices && r.invoices.length
+              r.invoices.length
                 ? ` — invoice ${r.invoices.join(", ")}`
                 : ""
             }`}
@@ -59,7 +53,7 @@ function ReceivedCell({
               {dd}/{mm}
             </span>
             <span dir="auto">{r.supplier}</span>
-            {showInvoices && r.invoices.length > 0 && (
+            {r.invoices.length > 0 && (
               <span className="font-mono tabular-nums">
                 {r.invoices.join(", ")}
               </span>
@@ -895,10 +889,12 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
 
   // Order id → first received date per distributor (Buy file), counting only
   // deliveries on or after the order's send date. No send date = nothing.
+  // Important companies are skipped — their Received cell stays empty.
   const receivedByOrder = React.useMemo(() => {
     const m = new Map<string, ReceivedDate[]>();
     if (tasfyaData.lines.length === 0) return m;
     for (const o of visibleOrders) {
+      if (isImportant(o)) continue;
       const name = (o.companyName ?? "").trim();
       const send = (o.sendDate ?? "").trim();
       if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(send)) continue;
@@ -2270,10 +2266,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                         />
                       </td>
                       <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
-                        <ReceivedCell
-                          rows={receivedFor(order)}
-                          showInvoices={!isImportant(order)}
-                        />
+                        <ReceivedCell rows={receivedFor(order)} />
                       </td>
                       <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
                         <button
