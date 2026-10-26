@@ -19,6 +19,7 @@ type LeanContract = {
   columns?: string[];
   rows?: unknown[];
   settings?: unknown;
+  achieved?: number | null;
 };
 
 // Keep only the known ContractSettings fields, as strings.
@@ -47,6 +48,7 @@ function toMeta(d: LeanContract) {
     matchedLineCount: d.matchedLineCount ?? 0,
     columns: d.columns ?? [],
     settings: cleanSettings(d.settings) ?? undefined,
+    achieved: typeof d.achieved === "number" ? d.achieved : undefined,
   };
 }
 
@@ -104,6 +106,9 @@ export async function POST(request: Request) {
     columns: body.columns as string[],
     rows,
     settings: cleanSettings(body.settings),
+    achieved: Number.isFinite(Number(body.achieved))
+      ? Number(body.achieved)
+      : null,
   };
 
   await connectDB();

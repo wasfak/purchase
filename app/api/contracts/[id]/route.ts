@@ -19,6 +19,7 @@ type LeanContract = {
   columns?: string[];
   rows?: unknown[];
   settings?: ContractSettings | null;
+  achieved?: number | null;
 };
 
 // GET /api/contracts/[id] — one saved contract with its rows, or null.
@@ -50,6 +51,7 @@ export async function GET(
       columns: d.columns ?? [],
       rows: d.rows ?? [],
       settings: d.settings ?? undefined,
+      achieved: typeof d.achieved === "number" ? d.achieved : undefined,
     },
   });
 }

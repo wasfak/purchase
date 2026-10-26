@@ -22,6 +22,8 @@ const ContractDocSchema = new Schema(
     columns: { type: [String], default: [] },
     // ContractSettings: companies / target / excluded suppliers & codes.
     settings: { type: Schema.Types.Mixed, default: null },
+    // Total buy at save time (after exclusions), for the dashboard cards.
+    achieved: { type: Number, default: null },
     // Array of rows, each a values-array (Cell[]) aligned to `columns`.
     rows: { type: [Schema.Types.Mixed], default: [] },
   },

@@ -34,6 +34,7 @@ export async function saveContract(input: {
   columns: string[];
   rows: Cell[][];
   settings?: ContractSettings;
+  achieved?: number;
 }): Promise<string> {
   const res = await fetch("/api/contracts", {
     method: "POST",

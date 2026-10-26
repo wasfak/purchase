@@ -210,6 +210,28 @@ export function computeQuarterlyTotals(rows: PurchaseRow[]): {
   return { totals, bonusExcluded };
 }
 
+/**
+ * Total buy (all four quarters) the Contracts page shows as "Achieved": bonus
+ * lines dropped, minus excluded suppliers and ignored codes. Used for the
+ * saved-contract cards so they match the open contract's readout.
+ */
+export function computeAchieved(
+  rows: PurchaseRow[],
+  excludedSuppliers: string[] = [],
+  excludedCodes: string[] = [],
+): number {
+  const sup = new Set(excludedSuppliers);
+  const codes = new Set(excludedCodes);
+  const kept = sup.size
+    ? rows.filter((r) => !sup.has(r[CONTRACT_COLUMNS.supplier]))
+    : rows;
+  let sum = 0;
+  for (const t of computeQuarterlyTotals(kept).totals) {
+    if (!codes.has(t.code)) sum += t.total;
+  }
+  return round2(sum);
+}
+
 // --- Per-code roll-ups (received qty / bonus) -----------------------------
 
 export type CodeAggregate = {

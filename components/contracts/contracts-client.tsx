@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Clock,
   Download,
   FileText,
   Gift,
@@ -15,7 +14,6 @@ import {
   PackageCheck,
   Save,
   Search,
-  Trash2,
   X,
 } from "lucide-react";
 
@@ -50,6 +48,7 @@ import { migrateContractsToServer } from "@/lib/migrate-to-server";
 import { downloadJson } from "@/lib/backup";
 import { YasmenView } from "@/components/contracts/yasmen-view";
 import { MarginView } from "@/components/contracts/margin-view";
+import { ContractsDashboard } from "@/components/contracts/contracts-dashboard";
 
 const HTML_ACCEPT = ".htm,.html";
 
@@ -895,6 +894,7 @@ export function ContractsClient() {
         columns: CONTRACT_COLUMN_ORDER,
         rows,
         settings,
+        achieved,
       });
       setCurrentId(id);
       await refreshSaved();
@@ -1023,6 +1023,20 @@ export function ContractsClient() {
 
   return (
     <div className="space-y-5">
+      {/* Saved contracts: target vs. achieved per contract. */}
+      <ContractsDashboard
+        saved={saved}
+        currentId={currentId}
+        onOpen={openSaved}
+        onDelete={removeSaved}
+        onBackup={downloadBackup}
+        backingUp={backingUp}
+      />
+
+      <div className="flex items-center gap-2 pt-2">
+        <h2 className="text-lg font-semibold">Upload new data</h2>
+      </div>
+
       {/* Upload zones */}
       <div className="grid gap-4 md:grid-cols-2">
         {/* Purchase files */}
@@ -1129,64 +1143,6 @@ export function ContractsClient() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
-        </div>
-      )}
-
-      {/* Saved contracts */}
-      {saved.length > 0 && (
-        <div className="rounded-xl border border-border bg-card p-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Clock className="size-4 text-muted-foreground" />
-              Saved contracts ({saved.length})
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={downloadBackup}
-              disabled={backingUp}
-              title="Download a JSON backup of every saved contract"
-            >
-              {backingUp ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Download />
-              )}
-              Backup
-            </Button>
-          </div>
-          <ul className="divide-y divide-border/60">
-            {saved.map((c) => (
-              <li
-                key={c.id}
-                className={cn(
-                  "flex items-center gap-3 py-2",
-                  c.id === currentId && "rounded-lg bg-primary/5 px-2",
-                )}
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{c.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {new Date(c.savedAt).toLocaleString()} ·{" "}
-                    {c.matchedLineCount.toLocaleString()} of{" "}
-                    {c.totalLineCount.toLocaleString()} lines matched
-                  </p>
-                </div>
-                <Button variant="outline" size="sm" onClick={() => openSaved(c.id)}>
-                  Open
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => removeSaved(c.id)}
-                  className="text-muted-foreground/60 transition-colors hover:text-destructive"
-                  title="Delete saved contract"
-                  aria-label="Delete saved contract"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </li>
-            ))}
-          </ul>
         </div>
       )}
 

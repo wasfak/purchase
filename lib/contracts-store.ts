@@ -32,6 +32,7 @@ export type ContractMeta = {
   totalLineCount: number; // purchase lines parsed before filtering
   matchedLineCount: number; // lines kept (code found in stock)
   settings?: ContractSettings;
+  achieved?: number; // total buy at save time (after exclusions)
   columns: string[];
 };
 
