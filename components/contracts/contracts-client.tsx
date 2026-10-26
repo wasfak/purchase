@@ -624,6 +624,10 @@ export function ContractsClient() {
       }
     }
     setCompanies(all ? [] : pickedHere);
+    // A new company pick is a new contract: saving must create a new entry,
+    // not overwrite the one saved for the previous pick.
+    setCurrentId(null);
+    setName(all ? "" : pickedHere.join("، "));
     setExcludedSuppliers(new Set());
     setExcludedCodes(new Set());
     setShowQuarters(false);
