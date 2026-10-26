@@ -38,7 +38,7 @@ import {
   type CodeAggregate,
   type PurchaseRow,
 } from "@/lib/contracts";
-import type { ContractMeta } from "@/lib/contracts-store";
+import type { ContractMeta, ContractSettings } from "@/lib/contracts-store";
 import {
   deleteContract,
   listContracts,
@@ -53,10 +53,24 @@ import { MarginView } from "@/components/contracts/margin-view";
 
 const HTML_ACCEPT = ".htm,.html";
 
-// Persisted across uploads/reloads: the year target and the last companies
-// picked, so the next upload is pre-filled.
-const TARGET_KEY = "contracts:yearTarget";
+// Persisted across uploads/reloads: the last companies picked, and per
+// company pick its year target + supplier/code exclusions (so reopening the
+// same company restores them).
 const COMPANIES_KEY = "contracts:companies";
+const COMPANY_SETTINGS_KEY = "contracts:companySettings";
+
+// Stable key for a company pick ("" = all companies).
+const companyKey = (list: string[]) => [...list].sort().join("|");
+const sameCompanies = (a: string[], b: string[]) =>
+  companyKey(a) === companyKey(b);
+
+function readCompanySettings(): Record<string, ContractSettings> {
+  try {
+    return JSON.parse(localStorage.getItem(COMPANY_SETTINGS_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
 
 // Loose Arabic match for the company search: unify alef/ya/ta-marbuta forms,
 // drop diacritics and tatweel, lowercase.
@@ -552,8 +566,8 @@ export function ContractsClient() {
     new Set(),
   );
   // Yearly buy target (as typed); drives the achieved/remaining readout.
-  // Remembered in localStorage so it's pre-filled on the next upload.
-  const [target, setTargetState] = React.useState("");
+  // Remembered per company pick and saved with each contract.
+  const [target, setTarget] = React.useState("");
 
   // Company step: after upload the user searches companies (suppliers) by
   // name and checks one or more; only their lines are used. companies: null =
@@ -564,8 +578,6 @@ export function ContractsClient() {
 
   React.useEffect(() => {
     try {
-      const t = localStorage.getItem(TARGET_KEY);
-      if (t) setTargetState(t);
       const c = localStorage.getItem(COMPANIES_KEY);
       if (c) setPicked(new Set(JSON.parse(c) as string[]));
     } catch {
@@ -573,14 +585,36 @@ export function ContractsClient() {
     }
   }, []);
 
-  const setTarget = (v: string) => {
-    setTargetState(v);
+  // Current view settings, saved with the contract and per company pick.
+  const settings: ContractSettings = React.useMemo(
+    () => ({
+      companies: companies ?? [],
+      target,
+      excludedSuppliers: [...excludedSuppliers],
+      excludedCodes: [...excludedCodes],
+    }),
+    [companies, target, excludedSuppliers, excludedCodes],
+  );
+
+  // Mirror the live (uploaded, not a reopened saved contract) settings into
+  // localStorage under this company pick.
+  React.useEffect(() => {
+    if (companies === null || savedInfo !== null) return;
     try {
-      if (v) localStorage.setItem(TARGET_KEY, v);
-      else localStorage.removeItem(TARGET_KEY);
+      const all = readCompanySettings();
+      all[companyKey(companies)] = settings;
+      localStorage.setItem(COMPANY_SETTINGS_KEY, JSON.stringify(all));
     } catch {
       // ignore
     }
+  }, [settings, companies, savedInfo]);
+
+  const restoreSettings = (s: ContractSettings | undefined) => {
+    setTarget(s?.target ?? "");
+    setExcludedSuppliers(new Set(s?.excludedSuppliers ?? []));
+    setExcludedCodes(new Set(s?.excludedCodes ?? []));
+    // Suppliers were already reviewed for this pick — go straight to totals.
+    setShowQuarters(Boolean(s));
   };
 
   // Companies = المورد from the stock file, for codes that have purchase lines.
@@ -623,19 +657,27 @@ export function ContractsClient() {
         // ignore
       }
     }
-    setCompanies(all ? [] : pickedHere);
-    // A new company pick is a new contract: saving must create a new entry,
-    // not overwrite the one saved for the previous pick.
-    setCurrentId(null);
-    setName(all ? "" : pickedHere.join("، "));
-    setExcludedSuppliers(new Set());
-    setExcludedCodes(new Set());
-    setShowQuarters(false);
+    const chosen = all ? [] : pickedHere;
+    setCompanies(chosen);
+    // Each company pick is its own contract: if one is already saved for this
+    // exact pick, saving updates it; otherwise Save creates a new one.
+    const existing = saved.find(
+      (c) => c.settings && sameCompanies(c.settings.companies, chosen),
+    );
+    setCurrentId(existing?.id ?? null);
+    setName(existing?.name ?? (all ? "" : chosen.join("، ")));
+    // Restore this pick's target + exclusions (this PC first, else the saved
+    // contract's).
+    restoreSettings(
+      readCompanySettings()[companyKey(chosen)] ?? existing?.settings,
+    );
   };
 
   // Purchase lines whose code belongs (per the stock file) to a chosen company.
   const companyRows = React.useMemo(() => {
-    if (!companies || companies.length === 0) return matchedRows;
+    // Reopened saved contracts carry no stock map — their rows are final.
+    if (!companies || companies.length === 0 || stockCompanies.size === 0)
+      return matchedRows;
     const keep = new Set(companies);
     return matchedRows.filter((r) =>
       keep.has(stockCompanies.get(r[CONTRACT_COLUMNS.code]) ?? ""),
@@ -852,6 +894,7 @@ export function ContractsClient() {
         totalLineCount: purchaseRows.length,
         columns: CONTRACT_COLUMN_ORDER,
         rows,
+        settings,
       });
       setCurrentId(id);
       await refreshSaved();
@@ -891,11 +934,10 @@ export function ContractsClient() {
       });
       setName(c.name);
       setCurrentId(c.id);
-      setExcludedSuppliers(new Set());
-      setExcludedCodes(new Set());
-      setShowQuarters(false);
-      // A saved contract is already filtered — skip the company step.
-      setCompanies([]);
+      // A saved contract is already filtered — skip the company step, but
+      // keep its company list so re-saving keeps the pick.
+      setCompanies(c.settings?.companies ?? []);
+      restoreSettings(c.settings);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that contract");
     } finally {
@@ -1270,13 +1312,15 @@ export function ContractsClient() {
               <b className="text-foreground" dir="rtl">
                 {companies.join("، ")}
               </b>
-              <button
-                type="button"
-                onClick={() => setCompanies(null)}
-                className="font-medium text-primary underline-offset-2 hover:underline"
-              >
-                change
-              </button>
+              {stockCompanies.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCompanies(null)}
+                  className="font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  change
+                </button>
+              )}
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">

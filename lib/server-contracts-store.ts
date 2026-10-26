@@ -6,7 +6,11 @@
 // signatures as the local store, so the Contracts client uses it unchanged.
 
 import type { Cell } from "@/lib/dataset";
-import type { Contract, ContractMeta } from "@/lib/contracts-store";
+import type {
+  Contract,
+  ContractMeta,
+  ContractSettings,
+} from "@/lib/contracts-store";
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -29,6 +33,7 @@ export async function saveContract(input: {
   totalLineCount: number;
   columns: string[];
   rows: Cell[][];
+  settings?: ContractSettings;
 }): Promise<string> {
   const res = await fetch("/api/contracts", {
     method: "POST",

@@ -18,7 +18,22 @@ type LeanContract = {
   matchedLineCount?: number;
   columns?: string[];
   rows?: unknown[];
+  settings?: unknown;
 };
+
+// Keep only the known ContractSettings fields, as strings.
+function cleanSettings(v: unknown) {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const strs = (x: unknown) =>
+    Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : [];
+  return {
+    companies: strs(o.companies),
+    target: typeof o.target === "string" ? o.target : "",
+    excludedSuppliers: strs(o.excludedSuppliers),
+    excludedCodes: strs(o.excludedCodes),
+  };
+}
 
 function toMeta(d: LeanContract) {
   return {
@@ -31,6 +46,7 @@ function toMeta(d: LeanContract) {
     totalLineCount: d.totalLineCount ?? 0,
     matchedLineCount: d.matchedLineCount ?? 0,
     columns: d.columns ?? [],
+    settings: cleanSettings(d.settings) ?? undefined,
   };
 }
 
@@ -87,6 +103,7 @@ export async function POST(request: Request) {
     matchedLineCount: rows.length,
     columns: body.columns as string[],
     rows,
+    settings: cleanSettings(body.settings),
   };
 
   await connectDB();

@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
 import { ContractDoc } from "@/lib/models/ContractDoc";
+import type { ContractSettings } from "@/lib/contracts-store";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ type LeanContract = {
   matchedLineCount?: number;
   columns?: string[];
   rows?: unknown[];
+  settings?: ContractSettings | null;
 };
 
 // GET /api/contracts/[id] — one saved contract with its rows, or null.
@@ -47,6 +49,7 @@ export async function GET(
       matchedLineCount: d.matchedLineCount ?? 0,
       columns: d.columns ?? [],
       rows: d.rows ?? [],
+      settings: d.settings ?? undefined,
     },
   });
 }

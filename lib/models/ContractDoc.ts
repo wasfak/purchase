@@ -20,6 +20,8 @@ const ContractDocSchema = new Schema(
     totalLineCount: { type: Number, default: 0 },
     matchedLineCount: { type: Number, default: 0 },
     columns: { type: [String], default: [] },
+    // ContractSettings: companies / target / excluded suppliers & codes.
+    settings: { type: Schema.Types.Mixed, default: null },
     // Array of rows, each a values-array (Cell[]) aligned to `columns`.
     rows: { type: [Schema.Types.Mixed], default: [] },
   },

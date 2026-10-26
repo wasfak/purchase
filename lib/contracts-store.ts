@@ -13,6 +13,15 @@ const DB_VERSION = 1;
 const STORE_META = "contracts"; // lightweight metadata, one record per contract
 const STORE_ROWS = "rowdata"; // { id, rows } — the heavy row blob, keyed by id
 
+/** Per-contract view settings, restored when the contract (or the same
+ *  company pick) is opened again. */
+export type ContractSettings = {
+  companies: string[]; // picked companies (المورد); [] = all
+  target: string; // year target as typed
+  excludedSuppliers: string[]; // distributor chips switched off
+  excludedCodes: string[]; // codes removed from the Total buy
+};
+
 export type ContractMeta = {
   id: string;
   name: string;
@@ -22,6 +31,7 @@ export type ContractMeta = {
   stockCodeCount: number;
   totalLineCount: number; // purchase lines parsed before filtering
   matchedLineCount: number; // lines kept (code found in stock)
+  settings?: ContractSettings;
   columns: string[];
 };
 
