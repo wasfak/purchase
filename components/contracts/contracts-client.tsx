@@ -488,6 +488,8 @@ export function ContractsClient() {
   // freshly built (unsaved) result leaves this null.
   const [currentId, setCurrentId] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState<ContractMeta[]>([]);
+  // True until the saved-contract list has first loaded (dashboard skeleton).
+  const [loadingSaved, setLoadingSaved] = React.useState(true);
   // Preserved counts when viewing a saved contract (stock file is not re-run).
   const [savedInfo, setSavedInfo] =
     React.useState<Pick<ContractMeta, "stockCodeCount" | "totalLineCount"> | null>(
@@ -530,6 +532,8 @@ export function ContractsClient() {
         if (active) setSaved(list);
       } catch {
         // Server unavailable — saving/listing just won't be offered right now.
+      } finally {
+        if (active) setLoadingSaved(false);
       }
     })();
     return () => {
@@ -1031,6 +1035,7 @@ export function ContractsClient() {
         onDelete={removeSaved}
         onBackup={downloadBackup}
         backingUp={backingUp}
+        loading={loadingSaved}
       />
 
       <div className="flex items-center gap-2 pt-2">

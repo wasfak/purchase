@@ -187,6 +187,40 @@ function ContractCard({
   );
 }
 
+// Placeholder cards shown while saved contracts are being fetched.
+function DashboardSkeleton() {
+  return (
+    <section className="space-y-3" aria-busy="true">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        Preparing your contracts…
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="flex animate-pulse flex-col gap-4 rounded-2xl border border-border bg-card p-5"
+          >
+            <div className="space-y-2">
+              <div className="h-4 w-2/3 rounded bg-muted" />
+              <div className="h-3 w-1/3 rounded bg-muted" />
+            </div>
+            <div className="flex items-center gap-5">
+              <div className="size-36 shrink-0 rounded-full border-[12px] border-muted" />
+              <div className="flex-1 space-y-3">
+                <div className="h-3 w-1/2 rounded bg-muted" />
+                <div className="h-4 w-3/4 rounded bg-muted" />
+                <div className="h-3 w-1/2 rounded bg-muted" />
+                <div className="h-4 w-2/3 rounded bg-muted" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /**
  * Landing view of the Contracts page: one card per saved contract with its
  * target-vs-achieved donut. Clicking a card opens that contract.
@@ -198,6 +232,7 @@ export function ContractsDashboard({
   onDelete,
   onBackup,
   backingUp,
+  loading = false,
 }: {
   saved: ContractMeta[];
   currentId: string | null;
@@ -205,6 +240,7 @@ export function ContractsDashboard({
   onDelete: (id: string) => void;
   onBackup: () => void;
   backingUp: boolean;
+  loading?: boolean;
 }) {
   // Achieved for contracts saved before it was stored: computed once from
   // their rows, keyed by id + savedAt so a re-save recomputes.
@@ -248,6 +284,7 @@ export function ContractsDashboard({
     };
   }, [saved, computed]);
 
+  if (loading) return <DashboardSkeleton />;
   if (saved.length === 0) return null;
 
   return (
