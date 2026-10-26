@@ -40,21 +40,31 @@ function ReceivedCell({ rows }: { rows?: ReceivedDate[] }) {
       {rows.map((r) => {
         const [, mm, dd] = r.date.split("/");
         return (
+          // Date + distributor on one line (name truncated, full text on
+          // hover), invoice number(s) on a second line — keeps mixed
+          // Arabic/number text from jumbling when the column is narrow.
           <span
             key={r.supplier}
-            className="flex flex-wrap items-center gap-x-1.5"
+            className="flex min-w-0 flex-col"
             title={`First received from ${r.supplier} on ${r.date}${
               r.invoices.length
                 ? ` — invoice ${r.invoices.join(", ")}`
                 : ""
             }`}
           >
-            <span className="font-medium tabular-nums">
-              {dd}/{mm}
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="shrink-0 font-medium tabular-nums" dir="ltr">
+                {dd}/{mm}
+              </span>
+              <span className="min-w-0 truncate" dir="rtl">
+                {r.supplier}
+              </span>
             </span>
-            <span dir="auto">{r.supplier}</span>
             {r.invoices.length > 0 && (
-              <span className="font-mono tabular-nums">
+              <span
+                className="font-mono tabular-nums"
+                dir="ltr"
+              >
                 {r.invoices.join(", ")}
               </span>
             )}
