@@ -24,6 +24,8 @@ export type ContractSettings = {
 
 export type ContractMeta = {
   id: string;
+  mine?: boolean; // saved by the signed-in user (server store only)
+  ownerName?: string; // who saved it (server store only)
   name: string;
   savedAt: number; // epoch ms
   purchaseFileNames: string[];

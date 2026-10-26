@@ -8,6 +8,7 @@ import type { ContractSettings } from "@/lib/contracts-store";
 export const runtime = "nodejs";
 
 type LeanContract = {
+  ownerId: string;
   key: string;
   name?: string;
   savedAt: number;
@@ -22,7 +23,8 @@ type LeanContract = {
   achieved?: number | null;
 };
 
-// GET /api/contracts/[id] — one saved contract with its rows, or null.
+// GET /api/contracts/[id] — one saved contract with its rows, or null. Any
+// signed-in user may open any contract (view-only for non-owners).
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -33,14 +35,12 @@ export async function GET(
   }
   const { id } = await params;
   await connectDB();
-  const d = await ContractDoc.findOne({
-    ownerId: userId,
-    key: id,
-  }).lean<LeanContract | null>();
+  const d = await ContractDoc.findOne({ key: id }).lean<LeanContract | null>();
   if (!d) return NextResponse.json({ contract: null });
   return NextResponse.json({
     contract: {
       id: d.key,
+      mine: d.ownerId === userId,
       name: d.name ?? "",
       savedAt: d.savedAt,
       purchaseFileNames: d.purchaseFileNames ?? [],
@@ -56,7 +56,7 @@ export async function GET(
   });
 }
 
-// DELETE /api/contracts/[id] — remove one saved contract.
+// DELETE /api/contracts/[id] — remove one saved contract (owner only).
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -67,6 +67,15 @@ export async function DELETE(
   }
   const { id } = await params;
   await connectDB();
-  await ContractDoc.deleteOne({ ownerId: userId, key: id });
+  const { deletedCount } = await ContractDoc.deleteOne({
+    ownerId: userId,
+    key: id,
+  });
+  if (deletedCount === 0) {
+    return NextResponse.json(
+      { error: "Only the person who saved this contract can delete it." },
+      { status: 403 },
+    );
+  }
   return NextResponse.json({ ok: true });
 }

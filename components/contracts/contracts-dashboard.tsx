@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Download, Loader2, Target, Trash2 } from "lucide-react";
+import { Download, Loader2, Target, Trash2, User } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -130,19 +130,28 @@ function ContractCard({
             {new Date(meta.savedAt).toLocaleDateString()} ·{" "}
             {meta.matchedLineCount.toLocaleString()} lines
           </p>
+          {meta.ownerName && (
+            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+              <User className="size-3" />
+              {meta.mine === false ? meta.ownerName : "You"}
+            </p>
+          )}
         </div>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
-          title="Delete saved contract"
-          aria-label="Delete saved contract"
-        >
-          <Trash2 className="size-4" />
-        </button>
+        {/* Only the owner can delete; others' contracts are view-only. */}
+        {meta.mine !== false && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
+            title="Delete saved contract"
+            aria-label="Delete saved contract"
+          >
+            <Trash2 className="size-4" />
+          </button>
+        )}
       </div>
 
       <div className="flex items-center gap-5">

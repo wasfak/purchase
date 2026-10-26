@@ -665,7 +665,10 @@ export function ContractsClient() {
     // Each company pick is its own contract: if one is already saved for this
     // exact pick, saving updates it; otherwise Save creates a new one.
     const existing = saved.find(
-      (c) => c.settings && sameCompanies(c.settings.companies, chosen),
+      (c) =>
+        c.mine !== false &&
+        c.settings &&
+        sameCompanies(c.settings.companies, chosen),
     );
     setCurrentId(existing?.id ?? null);
     setName(existing?.name ?? (all ? "" : chosen.join("، ")));
@@ -882,6 +885,10 @@ export function ContractsClient() {
     }
   }, []);
 
+  // Others' contracts are view-only: saving one makes your own copy.
+  const currentMine =
+    saved.find((c) => c.id === currentId)?.mine !== false;
+
   const save = async () => {
     setSaving(true);
     try {
@@ -889,7 +896,7 @@ export function ContractsClient() {
         CONTRACT_COLUMN_ORDER.map((c) => r[c] ?? ""),
       );
       const id = await saveContract({
-        id: currentId ?? undefined,
+        id: currentId && currentMine ? currentId : undefined,
         name,
         purchaseFileNames: purchaseFiles,
         stockFileName: stockFileName ?? "",
@@ -1299,7 +1306,11 @@ export function ContractsClient() {
             </span>
             <Button onClick={save} disabled={saving}>
               {saving ? <Loader2 className="animate-spin" /> : <Save />}
-              {currentId ? "Update saved" : "Save to cloud"}
+              {currentId && currentMine
+                ? "Update saved"
+                : currentId
+                  ? "Save as my copy"
+                  : "Save to cloud"}
             </Button>
           </div>
 

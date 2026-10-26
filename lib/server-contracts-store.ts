@@ -14,10 +14,16 @@ import type {
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const msg =
+    let msg =
       res.status === 401
         ? "Please sign in to use your saved contracts."
         : `Request failed (${res.status})`;
+    if (res.status === 403) {
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (body?.error) msg = body.error;
+    }
     throw new Error(msg);
   }
   return (await res.json()) as T;

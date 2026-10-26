@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { auth, clerkClient } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
 import { ContractDoc } from "@/lib/models/ContractDoc";
@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 
 // Shape returned to the client — matches ContractMeta (+ optional rows).
 type LeanContract = {
+  ownerId: string;
   key: string;
   name?: string;
   savedAt: number;
@@ -36,9 +37,35 @@ function cleanSettings(v: unknown) {
   };
 }
 
-function toMeta(d: LeanContract) {
+// Display names for the given Clerk user ids (full name, else email).
+async function ownerNames(ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  try {
+    const client = await clerkClient();
+    const { data } = await client.users.getUserList({
+      userId: ids,
+      limit: Math.min(ids.length, 500),
+    });
+    for (const u of data) {
+      const name =
+        [u.firstName, u.lastName].filter(Boolean).join(" ") ||
+        u.primaryEmailAddress?.emailAddress ||
+        u.emailAddresses[0]?.emailAddress ||
+        "";
+      out.set(u.id, name);
+    }
+  } catch {
+    // Names are cosmetic — cards just show no owner.
+  }
+  return out;
+}
+
+function toMeta(d: LeanContract, userId: string, names?: Map<string, string>) {
   return {
     id: d.key,
+    mine: d.ownerId === userId,
+    ownerName: names?.get(d.ownerId) ?? "",
     name: d.name ?? "",
     savedAt: d.savedAt,
     purchaseFileNames: d.purchaseFileNames ?? [],
@@ -52,8 +79,9 @@ function toMeta(d: LeanContract) {
   };
 }
 
-// GET /api/contracts        → saved-contract metadata only (fast listing)
-// GET /api/contracts?full=1 → every saved contract WITH its rows (backup export)
+// GET /api/contracts        → EVERY user's saved-contract metadata (shared,
+//                              view-only for non-owners; fast listing)
+// GET /api/contracts?full=1 → the caller's own contracts WITH rows (backup)
 export async function GET(request: Request) {
   const { userId } = await auth();
   if (!userId) {
@@ -61,16 +89,20 @@ export async function GET(request: Request) {
   }
   const full = new URL(request.url).searchParams.get("full") === "1";
   await connectDB();
-  const docs = await ContractDoc.find(
-    { ownerId: userId },
-    full ? {} : { rows: 0 },
-  )
+  if (full) {
+    const docs = await ContractDoc.find({ ownerId: userId })
+      .sort({ savedAt: -1 })
+      .lean<LeanContract[]>();
+    return NextResponse.json({
+      contracts: docs.map((d) => ({ ...toMeta(d, userId), rows: d.rows ?? [] })),
+    });
+  }
+  const docs = await ContractDoc.find({}, { rows: 0 })
     .sort({ savedAt: -1 })
     .lean<LeanContract[]>();
+  const names = await ownerNames([...new Set(docs.map((d) => d.ownerId))]);
   return NextResponse.json({
-    contracts: docs.map((d) =>
-      full ? { ...toMeta(d), rows: d.rows ?? [] } : toMeta(d),
-    ),
+    contracts: docs.map((d) => toMeta(d, userId, names)),
   });
 }
 
@@ -112,6 +144,16 @@ export async function POST(request: Request) {
   };
 
   await connectDB();
+  // Contracts are visible to everyone but only the owner may overwrite one.
+  const existing = await ContractDoc.findOne({ key: id }, { ownerId: 1 }).lean<{
+    ownerId: string;
+  } | null>();
+  if (existing && existing.ownerId !== userId) {
+    return NextResponse.json(
+      { error: "Only the person who saved this contract can update it." },
+      { status: 403 },
+    );
+  }
   await ContractDoc.updateOne(
     { ownerId: userId, key: id },
     { $set: doc },
