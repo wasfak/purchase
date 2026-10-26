@@ -14,6 +14,7 @@ import {
   Loader2,
   PackageCheck,
   Save,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
@@ -51,6 +52,24 @@ import { YasmenView } from "@/components/contracts/yasmen-view";
 import { MarginView } from "@/components/contracts/margin-view";
 
 const HTML_ACCEPT = ".htm,.html";
+
+// Persisted across uploads/reloads: the year target and the last companies
+// picked, so the next upload is pre-filled.
+const TARGET_KEY = "contracts:yearTarget";
+const COMPANIES_KEY = "contracts:companies";
+
+// Loose Arabic match for the company search: unify alef/ya/ta-marbuta forms,
+// drop diacritics and tatweel, lowercase.
+const normName = (s: string) =>
+  s
+    .replace(/[\u064B-\u0652\u0640]/g, "")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
 const isHtml = (f: File) => /\.html?$/i.test(f.name);
 
 // Sanitize a contract name into a safe .xlsx filename stem.
@@ -529,9 +548,38 @@ export function ContractsClient() {
     new Set(),
   );
   // Yearly buy target (as typed); drives the achieved/remaining readout.
-  const [target, setTarget] = React.useState("");
+  // Remembered in localStorage so it's pre-filled on the next upload.
+  const [target, setTargetState] = React.useState("");
 
-  const suppliers = React.useMemo(() => {
+  // Company step: after upload the user searches companies (suppliers) by
+  // name and checks one or more; only their lines are used. companies: null =
+  // not chosen yet for this upload; [] = all companies.
+  const [companySearch, setCompanySearch] = React.useState("");
+  const [picked, setPicked] = React.useState<Set<string>>(new Set());
+  const [companies, setCompanies] = React.useState<string[] | null>(null);
+
+  React.useEffect(() => {
+    try {
+      const t = localStorage.getItem(TARGET_KEY);
+      if (t) setTargetState(t);
+      const c = localStorage.getItem(COMPANIES_KEY);
+      if (c) setPicked(new Set(JSON.parse(c) as string[]));
+    } catch {
+      // localStorage unavailable — values just won't persist.
+    }
+  }, []);
+
+  const setTarget = (v: string) => {
+    setTargetState(v);
+    try {
+      if (v) localStorage.setItem(TARGET_KEY, v);
+      else localStorage.removeItem(TARGET_KEY);
+    } catch {
+      // ignore
+    }
+  };
+
+  const allSuppliers = React.useMemo(() => {
     const set = new Set<string>();
     for (const r of matchedRows) {
       const s = r[CONTRACT_COLUMNS.supplier];
@@ -540,14 +588,66 @@ export function ContractsClient() {
     return [...set].sort((a, b) => a.localeCompare(b, "ar"));
   }, [matchedRows]);
 
+  // Suppliers shown in the picker for the current search text.
+  const searchedSuppliers = React.useMemo(() => {
+    const q = normName(companySearch);
+    return q ? allSuppliers.filter((s) => normName(s).includes(q)) : allSuppliers;
+  }, [allSuppliers, companySearch]);
+
+  // Checked companies that exist in this upload (saved picks from an older
+  // upload may not).
+  const pickedHere = allSuppliers.filter((s) => picked.has(s));
+
+  const togglePicked = (name: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+
+  const applyCompanies = (all = false) => {
+    if (!all && pickedHere.length === 0) {
+      toast.error("Check at least one company");
+      return;
+    }
+    if (!all) {
+      try {
+        localStorage.setItem(COMPANIES_KEY, JSON.stringify(pickedHere));
+      } catch {
+        // ignore
+      }
+    }
+    setCompanies(all ? [] : pickedHere);
+    setExcludedSuppliers(new Set());
+    setExcludedCodes(new Set());
+    setShowQuarters(false);
+  };
+
+  // Stock-matched lines narrowed to the chosen companies.
+  const companyRows = React.useMemo(() => {
+    if (!companies || companies.length === 0) return matchedRows;
+    const keep = new Set(companies);
+    return matchedRows.filter((r) => keep.has(r[CONTRACT_COLUMNS.supplier]));
+  }, [matchedRows, companies]);
+
+  const suppliers = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const r of companyRows) {
+      const s = r[CONTRACT_COLUMNS.supplier];
+      if (s) set.add(s);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, "ar"));
+  }, [companyRows]);
+
   const supplierFilteredRows = React.useMemo(
     () =>
       excludedSuppliers.size === 0
-        ? matchedRows
-        : matchedRows.filter(
+        ? companyRows
+        : companyRows.filter(
             (r) => !excludedSuppliers.has(r[CONTRACT_COLUMNS.supplier]),
           ),
-    [matchedRows, excludedSuppliers],
+    [companyRows, excludedSuppliers],
   );
 
   const toggleSupplier = (name: string) =>
@@ -668,6 +768,7 @@ export function ContractsClient() {
       setExcludedSuppliers(new Set());
       setExcludedCodes(new Set());
       setShowQuarters(false);
+      setCompanies(null);
       toast.success(
         `Loaded ${parsed.length} purchase line${parsed.length === 1 ? "" : "s"} from ${htmls.length} file${htmls.length === 1 ? "" : "s"}`,
       );
@@ -707,6 +808,7 @@ export function ContractsClient() {
       setExcludedSuppliers(new Set());
       setExcludedCodes(new Set());
       setShowQuarters(false);
+      setCompanies(null);
       if (allCodes.length === 0) {
         toast.warning("No item codes were detected in the stock file(s).");
       } else {
@@ -724,7 +826,7 @@ export function ContractsClient() {
   const save = async () => {
     setSaving(true);
     try {
-      const rows: Cell[][] = matchedRows.map((r) =>
+      const rows: Cell[][] = companyRows.map((r) =>
         CONTRACT_COLUMN_ORDER.map((c) => r[c] ?? ""),
       );
       const id = await saveContract({
@@ -777,6 +879,8 @@ export function ContractsClient() {
       setExcludedSuppliers(new Set());
       setExcludedCodes(new Set());
       setShowQuarters(false);
+      // A saved contract is already filtered — skip the company step.
+      setCompanies([]);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that contract");
     } finally {
@@ -826,7 +930,7 @@ export function ContractsClient() {
     setSavedInfo(null);
     setExcludedSuppliers(new Set());
     setShowQuarters(false);
-    setTarget("");
+    setCompanies(null);
     if (purchaseInputRef.current) purchaseInputRef.current.value = "";
     if (stockInputRef.current) stockInputRef.current.value = "";
   };
@@ -1037,8 +1141,126 @@ export function ContractsClient() {
         </div>
       )}
 
-      {bothReady && (
+      {/* Company step: pick which companies to analyse before any results. */}
+      {bothReady && companies === null && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <label htmlFor="company-search" className="text-sm font-semibold">
+              Companies ({pickedHere.length} of {allSuppliers.length} checked)
+            </label>
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  setPicked((prev) => new Set([...prev, ...searchedSuppliers]))
+                }
+                disabled={searchedSuppliers.length === 0}
+              >
+                Check shown
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setPicked(new Set())}
+                disabled={picked.size === 0}
+              >
+                Uncheck all
+              </Button>
+            </div>
+          </div>
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              id="company-search"
+              dir="rtl"
+              autoFocus
+              value={companySearch}
+              onChange={(e) => setCompanySearch(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter checks the single remaining match.
+                if (e.key === "Enter" && searchedSuppliers.length === 1) {
+                  e.preventDefault();
+                  togglePicked(searchedSuppliers[0]);
+                  setCompanySearch("");
+                }
+              }}
+              placeholder="ابحث باسم الشركة…"
+              className="h-9 w-full rounded-lg border border-border bg-background pr-9 pl-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+            />
+          </div>
+          <ul
+            dir="rtl"
+            className="mt-2 max-h-72 divide-y divide-border/60 overflow-y-auto rounded-lg border border-border"
+          >
+            {searchedSuppliers.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-muted-foreground">
+                No company matches
+              </li>
+            ) : (
+              searchedSuppliers.map((s) => (
+                <li key={s}>
+                  <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted/50">
+                    <input
+                      type="checkbox"
+                      checked={picked.has(s)}
+                      onChange={() => togglePicked(s)}
+                      className="size-4 accent-primary"
+                    />
+                    {s}
+                  </label>
+                </li>
+              ))
+            )}
+          </ul>
+          {pickedHere.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5" dir="rtl">
+              {pickedHere.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => togglePicked(s)}
+                  className="flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 text-xs font-medium hover:bg-primary/20"
+                  title="Uncheck"
+                >
+                  {s}
+                  <X className="size-3" />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              onClick={() => applyCompanies()}
+              disabled={pickedHere.length === 0}
+            >
+              <Search />
+              Get data
+            </Button>
+            <Button variant="ghost" onClick={() => applyCompanies(true)}>
+              All companies ({allSuppliers.length})
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {bothReady && companies !== null && (
         <>
+          {companies.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              Companies:
+              <b className="text-foreground" dir="rtl">
+                {companies.join("، ")}
+              </b>
+              <button
+                type="button"
+                onClick={() => setCompanies(null)}
+                className="font-medium text-primary underline-offset-2 hover:underline"
+              >
+                change
+              </button>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
             <input
               value={name}
@@ -1048,7 +1270,7 @@ export function ContractsClient() {
             />
             <span className="flex items-center gap-1.5 px-1 text-sm text-muted-foreground">
               <CheckCircle2 className="size-4 text-primary" />
-              {matchedRows.length.toLocaleString()} of{" "}
+              {companyRows.length.toLocaleString()} of{" "}
               {totalLines.toLocaleString()} lines · {stockCount.toLocaleString()}{" "}
               stock codes
             </span>
@@ -1458,7 +1680,7 @@ export function ContractsClient() {
               }
             />
           ) : (
-            <YasmenView rows={matchedRows} />
+            <YasmenView rows={companyRows} />
           )}
         </>
       )}
