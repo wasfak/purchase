@@ -41,6 +41,9 @@ const OrderSchema = new Schema(
     // "yes" / "no" — flags an order as important for the month.
     important: { type: String, default: "" },
 
+    // "yes" / "" — تحويلات: the order has transfers.
+    tahweelat: { type: String, default: "" },
+
     // Text notes, each with an optional file attachment (pdf/excel).
     damaged: { type: String, default: "" },
     damagedFile: { type: AttachmentSchema, default: null },
@@ -74,6 +77,7 @@ export const ORDER_TEXT_FIELDS = [
   "noNeed",
   "important",
   "reviewed",
+  "tahweelat",
 ] as const;
 
 export type OrderTextField = (typeof ORDER_TEXT_FIELDS)[number];

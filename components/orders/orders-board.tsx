@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, ArrowUpDown, Filter, ClipboardList, Copy } from "lucide-react";
+import { Plus, Upload, Download, Trash2, Loader2, X, Calendar, CopyPlus, Ban, Search, AlarmClock, Check, PackageCheck, Calculator, Plane, StickyNote, ChevronDown, Star, ArrowUp, ArrowDown, Filter, ClipboardList, Copy } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -42,7 +42,7 @@ function ReceivedCell({ rows }: { rows?: ReceivedDate[] }) {
         return (
           <span
             key={r.supplier}
-            className="inline-flex items-center gap-1.5"
+            className="flex flex-wrap items-center gap-x-1.5"
             title={`First received from ${r.supplier} on ${r.date}${
               r.invoices.length
                 ? ` — invoice ${r.invoices.join(", ")}`
@@ -347,6 +347,11 @@ function isNotStarted(order: Order): boolean {
 // The user has marked this company as not needing an order this month.
 function isNoNeed(order: Order): boolean {
   return (order.noNeed ?? "").trim() === "yes";
+}
+
+// تحويلات: the user marked this order as having transfers.
+function isTahweelat(order: Order): boolean {
+  return (order.tahweelat ?? "").trim().toLowerCase() === "yes";
 }
 
 // The user flagged this order as important for this month.
@@ -929,8 +934,9 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
   }, [expiryItems]);
 
   // Every column the header menus can sort + filter: the data columns plus the
-  // derived status columns (تقفيلات / Review / Display exp).
+  // derived status columns (تقفيلات / تحويلات / Review / Display exp).
   const filterCols = React.useMemo<FilterCol[]>(() => {
+    const tahweelatText = (o: Order) => (isTahweelat(o) ? "Yes" : "No");
     const taqfeelatText = (o: Order) => {
       const key = normalizeCompany(o.companyName ?? "");
       if (!taqfeelatKeys.has(key)) return "";
@@ -955,6 +961,12 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
         label: "تقفيلات",
         value: taqfeelatText,
         sort: (o) => taqfeelatText(o) || null,
+      },
+      {
+        key: "_tahweelat",
+        label: "تحويلات",
+        value: tahweelatText,
+        sort: tahweelatText,
       },
       {
         key: "_review",
@@ -1119,7 +1131,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
     return (
       <th
         key={fc.key}
-        className="px-1 py-1.5 leading-tight font-semibold text-muted-foreground"
+        className="px-0.5 py-1.5 leading-tight font-semibold text-muted-foreground"
         aria-sort={
           activeSort
             ? activeSort === "asc"
@@ -1146,9 +1158,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
               <ArrowUp className="size-3 shrink-0" />
             ) : activeSort === "desc" ? (
               <ArrowDown className="size-3 shrink-0" />
-            ) : (
-              <ArrowUpDown className="size-3 shrink-0 opacity-40" />
-            )}
+            ) : null}
           </button>
           <button
             type="button"
@@ -1169,7 +1179,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
               );
             }}
             className={cn(
-              "grid size-5 shrink-0 place-items-center rounded transition-colors hover:bg-muted hover:text-foreground",
+              "grid size-4 shrink-0 place-items-center rounded transition-colors hover:bg-muted hover:text-foreground",
               filtered && "text-primary",
             )}
           >
@@ -1497,6 +1507,10 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
   }
 
   // Flip the "reviewed" (tasfya done) flag on an order and persist it.
+  function toggleTahweelat(order: Order) {
+    commitCell(order._id, "tahweelat", isTahweelat(order) ? "" : "yes");
+  }
+
   function toggleReviewed(order: Order) {
     commitCell(order._id, "reviewed", isReviewed(order) ? "" : "yes");
   }
@@ -2026,28 +2040,30 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
           <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-border text-left">
+                {/* Keep every header on one line (the table scrolls sideways). */}
+                <tr className="border-b border-border text-left whitespace-nowrap">
                   {COLUMNS.map((col) => (
                     <React.Fragment key={col.key}>
                       {filterHeader(filterColByKey.get(col.key)!)}
                       {col.key === "companyName" && (
-                        <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
+                        <th className="px-1 py-1.5 leading-tight font-semibold text-muted-foreground">
                           بيانات
                         </th>
                       )}
                     </React.Fragment>
                   ))}
                   {filterHeader(filterColByKey.get("_taqfeelat")!, true)}
+                  {filterHeader(filterColByKey.get("_tahweelat")!)}
                   {filterHeader(filterColByKey.get("_review")!)}
                   {filterHeader(filterColByKey.get("_exp")!)}
                   {filterHeader(filterColByKey.get("_received")!)}
-                  <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
+                  <th className="px-1 py-1.5 leading-tight font-semibold text-muted-foreground">
                     Auto Tasfya
                   </th>
-                  <th className="px-1.5 py-1.5 leading-tight font-semibold text-muted-foreground">
+                  <th className="px-1 py-1.5 leading-tight font-semibold text-muted-foreground">
                     Flying
                   </th>
-                  <th className="px-1.5 py-1.5" />
+                  <th className="px-1 py-1.5" />
                 </tr>
               </thead>
               <tbody>
@@ -2084,7 +2100,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           <React.Fragment key={col.key}>
                           <td
                             className={cn(
-                              "px-1.5 py-1.5 align-top",
+                              "px-1 py-1.5 align-top",
                               col.type === "textarea"
                                 ? "max-w-[12rem] whitespace-pre-wrap"
                                 : "whitespace-nowrap",
@@ -2190,7 +2206,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                             )}
                           </td>
                           {col.key === "companyName" && (
-                            <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                            <td className="px-1 py-1.5 align-top whitespace-nowrap">
                               <button
                                 type="button"
                                 onClick={() => setOpenDetails(raw)}
@@ -2210,7 +2226,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           </React.Fragment>
                         );
                       })}
-                      <td className="px-1.5 py-1.5 align-top text-center whitespace-nowrap">
+                      <td className="px-1 py-1.5 align-top text-center whitespace-nowrap">
                         {(() => {
                           const key = normalizeCompany(order.companyName ?? "");
                           if (!taqfeelatKeys.has(key))
@@ -2249,14 +2265,36 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           );
                         })()}
                       </td>
-                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                      <td className="px-1 py-1.5 align-top text-center whitespace-nowrap">
+                        {/* تحويلات — one click toggles Yes / No. */}
+                        <button
+                          type="button"
+                          onClick={() => toggleTahweelat(order)}
+                          disabled={busy}
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors disabled:opacity-50",
+                            isTahweelat(order)
+                              ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-400"
+                              : "border-border text-muted-foreground hover:bg-muted",
+                          )}
+                          title={
+                            isTahweelat(order)
+                              ? "تحويلات: Yes — click to set No"
+                              : "تحويلات: No — click to set Yes"
+                          }
+                        >
+                          {isTahweelat(order) && <Check className="size-3" />}
+                          {isTahweelat(order) ? "Yes" : "No"}
+                        </button>
+                      </td>
+                      <td className="px-1 py-1.5 align-top whitespace-nowrap">
                         <ReviewCell
                           order={order}
                           onToggle={() => toggleReviewed(order)}
                           busy={busy}
                         />
                       </td>
-                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                      <td className="px-1 py-1.5 align-top whitespace-nowrap">
                         <ExpiryCell
                           rows={expiryByCompany.get(
                             normalizeCompany(order.companyName ?? ""),
@@ -2265,10 +2303,10 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           onOpen={() => setOpenExpiry(order.companyName)}
                         />
                       </td>
-                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                      <td className="max-w-[11rem] px-1 py-1.5 align-top">
                         <ReceivedCell rows={receivedFor(order)} />
                       </td>
-                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                      <td className="px-1 py-1.5 align-top whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => {
@@ -2288,7 +2326,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           <Calculator className="size-3.5" /> Tasfya
                         </button>
                       </td>
-                      <td className="px-1.5 py-1.5 align-top whitespace-nowrap">
+                      <td className="px-1 py-1.5 align-top whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => {
@@ -2308,7 +2346,7 @@ export function OrdersBoard({ isAdmin = false }: { isAdmin?: boolean }) {
                           <Plane className="size-3.5" /> Flying
                         </button>
                       </td>
-                      <td className="px-1.5 py-1.5 align-top">
+                      <td className="px-1 py-1.5 align-top">
                         <div className="flex items-center gap-1.5">
                         <input
                           type="month"
