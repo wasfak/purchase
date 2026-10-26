@@ -3,6 +3,7 @@ import { auth, clerkClient } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
 import { ContractDoc } from "@/lib/models/ContractDoc";
+import { canEditAllContracts } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -61,10 +62,17 @@ async function ownerNames(ids: string[]): Promise<Map<string, string>> {
   return out;
 }
 
-function toMeta(d: LeanContract, userId: string, names?: Map<string, string>) {
+function toMeta(
+  d: LeanContract,
+  userId: string,
+  names?: Map<string, string>,
+  editor = false,
+) {
   return {
     id: d.key,
     mine: d.ownerId === userId,
+    canEdit: editor || d.ownerId === userId,
+    ownerId: d.ownerId,
     ownerName: names?.get(d.ownerId) ?? "",
     name: d.name ?? "",
     savedAt: d.savedAt,
@@ -101,8 +109,9 @@ export async function GET(request: Request) {
     .sort({ savedAt: -1 })
     .lean<LeanContract[]>();
   const names = await ownerNames([...new Set(docs.map((d) => d.ownerId))]);
+  const editor = await canEditAllContracts();
   return NextResponse.json({
-    contracts: docs.map((d) => toMeta(d, userId, names)),
+    contracts: docs.map((d) => toMeta(d, userId, names, editor)),
   });
 }
 
@@ -124,7 +133,6 @@ export async function POST(request: Request) {
   const rows = body.rows as unknown[];
 
   const doc = {
-    ownerId: userId,
     key: id,
     name: (String(body.name ?? "").trim() || "Untitled contract") as string,
     savedAt: Date.now(),
@@ -144,19 +152,24 @@ export async function POST(request: Request) {
   };
 
   await connectDB();
-  // Contracts are visible to everyone but only the owner may overwrite one.
+  // Contracts are visible to everyone; only the owner (or a contract editor)
+  // may overwrite one. An editor's update keeps the original owner.
   const existing = await ContractDoc.findOne({ key: id }, { ownerId: 1 }).lean<{
     ownerId: string;
   } | null>();
-  if (existing && existing.ownerId !== userId) {
+  if (
+    existing &&
+    existing.ownerId !== userId &&
+    !(await canEditAllContracts())
+  ) {
     return NextResponse.json(
       { error: "Only the person who saved this contract can update it." },
       { status: 403 },
     );
   }
   await ContractDoc.updateOne(
-    { ownerId: userId, key: id },
-    { $set: doc },
+    { ownerId: existing?.ownerId ?? userId, key: id },
+    { $set: doc, $setOnInsert: { ownerId: userId } },
     { upsert: true },
   );
   return NextResponse.json({ id });

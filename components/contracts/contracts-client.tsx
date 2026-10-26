@@ -885,9 +885,10 @@ export function ContractsClient() {
     }
   }, []);
 
-  // Others' contracts are view-only: saving one makes your own copy.
+  // Others' contracts are view-only (unless you're a contract editor):
+  // saving one makes your own copy.
   const currentMine =
-    saved.find((c) => c.id === currentId)?.mine !== false;
+    saved.find((c) => c.id === currentId)?.canEdit !== false;
 
   const save = async () => {
     setSaving(true);

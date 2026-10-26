@@ -97,6 +97,23 @@ export async function canUseFahmy(): Promise<boolean> {
   return isFahmyEmail(await currentUserEmail());
 }
 
+// Emails allowed to update / delete ANY saved contract (everyone can already
+// view them; owners can always edit their own). Extra ones can be added via the
+// CONTRACT_EDITOR_EMAILS env var (comma-separated). Grants nothing else.
+const CONTRACT_EDITOR_EMAILS = [
+  "noha.khairy810@gmail.com",
+  ...(process.env.CONTRACT_EDITOR_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+];
+
+/** Whether the signed-in user may edit every user's saved contracts. */
+export async function canEditAllContracts(): Promise<boolean> {
+  const email = await currentUserEmail();
+  return !!email && CONTRACT_EDITOR_EMAILS.includes(email.toLowerCase());
+}
+
 // Emails restricted to ONLY the مراجعة اوردرات (/orders-review) page — they
 // can't open Contracts, Winter or anything else. Extra ones can be added via
 // the ORDERS_REVIEW_EMAILS env var (comma-separated). A full-access email listed

@@ -25,6 +25,8 @@ export type ContractSettings = {
 export type ContractMeta = {
   id: string;
   mine?: boolean; // saved by the signed-in user (server store only)
+  canEdit?: boolean; // signed-in user may update/delete it (owner or editor)
+  ownerId?: string; // Clerk id of who saved it (server store only)
   ownerName?: string; // who saved it (server store only)
   name: string;
   savedAt: number; // epoch ms

@@ -137,8 +137,8 @@ function ContractCard({
             </p>
           )}
         </div>
-        {/* Only the owner can delete; others' contracts are view-only. */}
-        {meta.mine !== false && (
+        {/* Only the owner (or a contract editor) can delete. */}
+        {meta.canEdit !== false && (
           <button
             type="button"
             onClick={(e) => {
@@ -254,6 +254,29 @@ export function ContractsDashboard({
   // Achieved for contracts saved before it was stored: computed once from
   // their rows, keyed by id + savedAt so a re-save recomputes.
   const [computed, setComputed] = React.useState<Record<string, number>>({});
+  // "all" or an ownerId — which user's contracts to show.
+  const [ownerFilter, setOwnerFilter] = React.useState("all");
+
+  // One chip per user who saved a contract (you first), with counts.
+  const owners = React.useMemo(() => {
+    const map = new Map<string, { label: string; mine: boolean; n: number }>();
+    for (const m of saved) {
+      const id = m.ownerId ?? "";
+      const e = map.get(id);
+      if (e) e.n++;
+      else
+        map.set(id, {
+          label: m.mine ? "You" : m.ownerName || "Unknown",
+          mine: !!m.mine,
+          n: 1,
+        });
+    }
+    return [...map.entries()].sort(
+      (a, b) =>
+        Number(b[1].mine) - Number(a[1].mine) ||
+        a[1].label.localeCompare(b[1].label),
+    );
+  }, [saved]);
 
   React.useEffect(() => {
     let active = true;
@@ -296,6 +319,11 @@ export function ContractsDashboard({
   if (loading) return <DashboardSkeleton />;
   if (saved.length === 0) return null;
 
+  const shown =
+    ownerFilter === "all"
+      ? saved
+      : saved.filter((m) => (m.ownerId ?? "") === ownerFilter);
+
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -316,8 +344,33 @@ export function ContractsDashboard({
           Backup
         </Button>
       </div>
+      {/* Filter by who saved the contract. */}
+      {owners.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          {[
+            ["all", `All users (${saved.length})`] as const,
+            ...owners.map(([id, o]) => [id, `${o.label} (${o.n})`] as const),
+          ].map(([id, label]) => (
+            <button
+              key={id || "unknown"}
+              type="button"
+              onClick={() => setOwnerFilter(id)}
+              aria-pressed={ownerFilter === id}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                ownerFilter === id
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              {id !== "all" && <User className="size-3" />}
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        {saved.map((m) => (
+        {shown.map((m) => (
           <ContractCard
             key={m.id}
             meta={m}

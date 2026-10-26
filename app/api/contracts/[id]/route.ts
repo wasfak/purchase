@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 
 import { connectDB } from "@/lib/db";
 import { ContractDoc } from "@/lib/models/ContractDoc";
+import { canEditAllContracts } from "@/lib/access";
 import type { ContractSettings } from "@/lib/contracts-store";
 
 export const runtime = "nodejs";
@@ -41,6 +42,8 @@ export async function GET(
     contract: {
       id: d.key,
       mine: d.ownerId === userId,
+      canEdit: d.ownerId === userId || (await canEditAllContracts()),
+      ownerId: d.ownerId,
       name: d.name ?? "",
       savedAt: d.savedAt,
       purchaseFileNames: d.purchaseFileNames ?? [],
@@ -56,7 +59,8 @@ export async function GET(
   });
 }
 
-// DELETE /api/contracts/[id] — remove one saved contract (owner only).
+// DELETE /api/contracts/[id] — remove one saved contract (owner or a
+// contract editor).
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -67,10 +71,9 @@ export async function DELETE(
   }
   const { id } = await params;
   await connectDB();
-  const { deletedCount } = await ContractDoc.deleteOne({
-    ownerId: userId,
-    key: id,
-  });
+  const { deletedCount } = await ContractDoc.deleteOne(
+    (await canEditAllContracts()) ? { key: id } : { ownerId: userId, key: id },
+  );
   if (deletedCount === 0) {
     return NextResponse.json(
       { error: "Only the person who saved this contract can delete it." },
