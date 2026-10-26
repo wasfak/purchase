@@ -30,7 +30,7 @@ import {
   computeQuarterlyTotals,
   CONTRACT_COLUMNS,
   CONTRACT_COLUMN_ORDER,
-  extractStockCodes,
+  extractStockCodeCompanies,
   MONTH_LABELS,
   parsePurchaseHtml,
   QUARTER_LABELS,
@@ -460,6 +460,10 @@ export function ContractsClient() {
   const [purchaseRows, setPurchaseRows] = React.useState<PurchaseRow[]>([]);
   const [purchaseFiles, setPurchaseFiles] = React.useState<string[]>([]);
   const [stockCodes, setStockCodes] = React.useState<string[] | null>(null);
+  // Item code → company (المورد) from the stock file; drives the company picker.
+  const [stockCompanies, setStockCompanies] = React.useState<
+    Map<string, string>
+  >(new Map());
   const [stockFileName, setStockFileName] = React.useState<string | null>(null);
 
   const [name, setName] = React.useState("");
@@ -579,14 +583,15 @@ export function ContractsClient() {
     }
   };
 
+  // Companies = المورد from the stock file, for codes that have purchase lines.
   const allSuppliers = React.useMemo(() => {
     const set = new Set<string>();
     for (const r of matchedRows) {
-      const s = r[CONTRACT_COLUMNS.supplier];
+      const s = stockCompanies.get(r[CONTRACT_COLUMNS.code]);
       if (s) set.add(s);
     }
     return [...set].sort((a, b) => a.localeCompare(b, "ar"));
-  }, [matchedRows]);
+  }, [matchedRows, stockCompanies]);
 
   // Suppliers shown in the picker for the current search text.
   const searchedSuppliers = React.useMemo(() => {
@@ -624,12 +629,14 @@ export function ContractsClient() {
     setShowQuarters(false);
   };
 
-  // Stock-matched lines narrowed to the chosen companies.
+  // Purchase lines whose code belongs (per the stock file) to a chosen company.
   const companyRows = React.useMemo(() => {
     if (!companies || companies.length === 0) return matchedRows;
     const keep = new Set(companies);
-    return matchedRows.filter((r) => keep.has(r[CONTRACT_COLUMNS.supplier]));
-  }, [matchedRows, companies]);
+    return matchedRows.filter((r) =>
+      keep.has(stockCompanies.get(r[CONTRACT_COLUMNS.code]) ?? ""),
+    );
+  }, [matchedRows, companies, stockCompanies]);
 
   const suppliers = React.useMemo(() => {
     const set = new Set<string>();
@@ -788,18 +795,21 @@ export function ContractsClient() {
     setBusy(true);
     setError(null);
     try {
-      const merged = new Set<string>();
+      const merged = new Map<string, string>();
       const names: string[] = [];
       for (const file of htmls) {
-        const codes = extractStockCodes(await file.text());
-        if (codes.length === 0) {
+        const codes = extractStockCodeCompanies(await file.text());
+        if (codes.size === 0) {
           toast.warning(`No item codes were detected in ${file.name}`);
         }
-        for (const c of codes) merged.add(c);
+        for (const [c, company] of codes) {
+          if (!merged.get(c)) merged.set(c, company);
+        }
         names.push(file.name);
       }
-      const allCodes = Array.from(merged);
+      const allCodes = Array.from(merged.keys());
       setStockCodes(allCodes);
+      setStockCompanies(merged);
       setStockFileName(
         names.length === 1 ? names[0] : `${names.length} files`,
       );
@@ -869,6 +879,7 @@ export function ContractsClient() {
       setPurchaseRows(rows);
       setPurchaseFiles(c.purchaseFileNames);
       setStockCodes(null);
+      setStockCompanies(new Map());
       setStockFileName(c.stockFileName || null);
       setSavedInfo({
         stockCodeCount: c.stockCodeCount,
@@ -923,6 +934,7 @@ export function ContractsClient() {
     setPurchaseRows([]);
     setPurchaseFiles([]);
     setStockCodes(null);
+    setStockCompanies(new Map());
     setStockFileName(null);
     setName("");
     setError(null);
@@ -1195,7 +1207,9 @@ export function ContractsClient() {
           >
             {searchedSuppliers.length === 0 ? (
               <li className="px-3 py-2 text-sm text-muted-foreground">
-                No company matches
+                {allSuppliers.length === 0
+                  ? "No المورد (company) found in the stock file for the bought codes."
+                  : "No company matches"}
               </li>
             ) : (
               searchedSuppliers.map((s) => (

@@ -711,3 +711,49 @@ export function extractStockCodes(html: string): string[] {
   }
   return [...set];
 }
+
+// Header cell naming the company column in a stock export.
+const SUPPLIER_HEADER_RE = /^[اإ]?سم المورد$|^المورد$/;
+
+/**
+ * Like extractStockCodes, but also reads each code's company (المورد) so the
+ * contracts page can pick companies and pull their codes. The code is still the
+ * last non-empty all-digit cell. The company column is found from the header
+ * row (المورد / اسم المورد), after colspan expansion; if no header is seen, the
+ * store-stock layout's col[5] is used (see lib/tasfya/stock.ts). Codes with no
+ * readable company map to "".
+ */
+export function extractStockCodeCompanies(html: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let supplierIdx: number | null = null;
+  const rowRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(html)) !== null) {
+    const expanded: string[] = [];
+    for (const c of extractCells(rowMatch[1])) {
+      for (let k = 0; k < c.colspan; k++) expanded.push(k === 0 ? c.text : "");
+    }
+    const headerAt = expanded.findIndex((t) => SUPPLIER_HEADER_RE.test(t));
+    if (headerAt >= 0) {
+      supplierIdx = headerAt;
+      continue;
+    }
+    let code = "";
+    for (let i = expanded.length - 1; i >= 0; i--) {
+      const t = expanded[i];
+      if (t === "") continue;
+      if (/^\d+$/.test(t)) code = t;
+      break;
+    }
+    if (!code) continue;
+    const pick = (i: number) => {
+      const t = (expanded[i] ?? "").trim();
+      return t && !/^[\d.,\s-]+$/.test(t) ? t : "";
+    };
+    const company =
+      (supplierIdx !== null ? pick(supplierIdx) : "") ||
+      (expanded.length >= 14 ? pick(5) : "");
+    if (!out.has(code) || (!out.get(code) && company)) out.set(code, company);
+  }
+  return out;
+}
