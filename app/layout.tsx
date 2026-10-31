@@ -29,7 +29,8 @@ type NavIcon =
   | "analytics"
   | "winter"
   | "flying"
-  | "fahmy";
+  | "fahmy"
+  | "khosomat";
 type NavItem = { value: string; label: string; href: string; icon: NavIcon };
 
 export const metadata: Metadata = {
@@ -99,6 +100,12 @@ export default async function RootLayout({
           label: "علامة",
           href: "/alama",
           icon: "alama",
+        },
+        {
+          value: "khosomat",
+          label: "خصومات",
+          href: "/khosomat",
+          icon: "khosomat",
         },
         {
           value: "zero-codes",

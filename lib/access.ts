@@ -119,7 +119,6 @@ export async function canEditAllContracts(): Promise<boolean> {
 // the ORDERS_REVIEW_EMAILS env var (comma-separated). A full-access email listed
 // here keeps full access.
 const ORDERS_REVIEW_EMAILS = [
-  "wafaaelshouratarshouby@gmail.com",
   ...(process.env.ORDERS_REVIEW_EMAILS ?? "")
     .split(",")
     .map((e) => e.trim().toLowerCase())

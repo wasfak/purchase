@@ -19,8 +19,10 @@ const COLS = [
   "code",
   "E.X.P",
   "بيع 55يوم",
+  "بيع 70 يوم",
   "الرئيسي",
   "Order",
+  "اوردر 70 يوم",
   "order_maktob",
   "far2",
 ] as const;
@@ -47,6 +49,18 @@ function toNum(v: unknown): number {
 // Same as toNum but rounded to an integer (matches the script's astype(int)).
 function toInt(v: unknown): number {
   return Math.round(toNum(v));
+}
+
+// Projected sales over 70 days at the 55-day sales rate.
+function sales70(sales55: number): number {
+  return (sales55 / 55) * 70;
+}
+
+// 70 days of cover at the 55-day sales rate, minus stock on hand (main +
+// branches), floored at 0 and rounded to the nearest 5.
+function order70(sales55: number, main: number, branches: number): number {
+  const need = sales70(sales55) - (main + branches);
+  return need > 0 ? Math.round(need / 5) * 5 : 0;
 }
 
 // Parse an integer code, ignoring any stray non-digits. Returns null if none.
@@ -112,8 +126,15 @@ function processFiles(htmlText: string, csvText: string): ProcessResult {
       code,
       "E.X.P": csv ? (csv["E.X.P"] as string | number) ?? 0 : 0,
       "بيع 55يوم": toInt(csv?.["بيع 55يوم"]),
+      "بيع 70 يوم":
+        Math.round(sales70(toNum(csv?.["بيع 55يوم"])) / 5) * 5,
       الرئيسي: csv ? (csv["الرئيسي"] as string | number) ?? 0 : 0,
       Order: order,
+      "اوردر 70 يوم": order70(
+        toNum(csv?.["بيع 55يوم"]),
+        toNum(csv?.["الرئيسي"]),
+        toNum(csv?.["الفروع"]),
+      ),
       order_maktob: toInt(orderMaktob),
       far2: Math.round(orderMaktob - order),
     };

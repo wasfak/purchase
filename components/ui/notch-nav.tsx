@@ -23,6 +23,7 @@ import {
   LineChart,
   Snowflake,
   Plane,
+  Percent,
 } from "lucide-react";
 
 import type { LucideIcon } from "lucide-react";
@@ -47,7 +48,8 @@ type IconName =
   | "analytics"
   | "winter"
   | "flying"
-  | "fahmy";
+  | "fahmy"
+  | "khosomat";
 
 type Item = {
   value: string;
@@ -121,6 +123,7 @@ export function NotchNav({
     winter: Snowflake,
     flying: Plane,
     fahmy: LineChart,
+    khosomat: Percent,
   };
 
   const updateNotch = React.useCallback(() => {
