@@ -35,7 +35,12 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { MONTH_LABELS, QUARTER_LABELS, type Insights } from "@/lib/contracts";
+import {
+  linkRunItems,
+  MONTH_LABELS,
+  QUARTER_LABELS,
+  type Insights,
+} from "@/lib/contracts";
 import {
   slabStatuses,
   type ContractSlab,
@@ -1585,7 +1590,16 @@ function RankedBars({
   );
 }
 
-export function ContractBreakdown({ insights }: { insights: Insights }) {
+export function ContractBreakdown({
+  insights,
+  linkRuns,
+  onLinkRunsChange,
+}: {
+  insights: Insights;
+  linkRuns: boolean;
+  onLinkRunsChange: (v: boolean) => void;
+}) {
+  const topItems = linkRuns ? linkRunItems(insights.topItems) : insights.topItems;
   const bonusRate =
     insights.paidUnits > 0 ? (insights.bonusUnits / insights.paidUnits) * 100 : 0;
   return (
@@ -1605,10 +1619,42 @@ export function ContractBreakdown({ insights }: { insights: Insights }) {
           <SectionTitle
             icon={Package}
             title="Top 10 items"
-            hint="The items that drive the most buy value."
+            hint={
+              linkRuns
+                ? "تشغيلات linked — every price-tag code of a product counts as one item."
+                : "The items that drive the most buy value, per code."
+            }
+            right={
+              <div
+                className="inline-flex rounded-lg border border-border bg-secondary p-0.5 text-xs"
+                title="تشغيلات: codes of one product that differ only by a price tag (ت.ق / ت.ج / ت.ج2 …)"
+              >
+                {(
+                  [
+                    [false, "By code"],
+                    [true, "Link تشغيلات"],
+                  ] as [boolean, string][]
+                ).map(([v, label]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => onLinkRunsChange(v)}
+                    aria-pressed={linkRuns === v}
+                    className={cn(
+                      "rounded-md px-2.5 py-1 font-medium transition-colors",
+                      linkRuns === v
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            }
           />
           <RankedBars
-            items={insights.topItems.slice(0, 10).map((t) => ({
+            items={topItems.slice(0, 10).map((t) => ({
               label: t.product || t.code,
               value: t.value,
               hint: `${t.code} — ${t.product}`,

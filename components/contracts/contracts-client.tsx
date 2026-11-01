@@ -1387,7 +1387,7 @@ export function ContractsClient() {
             {(
               [
                 ["quarters", "Quarterly totals"],
-                ["invoices", "Invoices"],
+                ["invoices", "تعديل كورترات"],
                 // ["lines", "Purchase lines"], — hidden for now
                 // ["margin", "Best supplier"], — hidden for now
                 ["yasmen", "Yasmen mode"],
@@ -1612,11 +1612,9 @@ export function ContractsClient() {
                   />
 
                   <ContractBreakdown
-                    insights={
-                      linkRuns
-                        ? { ...insights, topItems: linkRunItems(insights.topItems) }
-                        : insights
-                    }
+                    insights={insights}
+                    linkRuns={linkRuns}
+                    onLinkRunsChange={setLinkRuns}
                   />
                 </>
               )}
