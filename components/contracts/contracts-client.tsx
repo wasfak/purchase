@@ -26,17 +26,25 @@ import {
   computeCodeReceipts,
   computeInsights,
   computeQuarterlyTotals,
+  applyInvoiceDates,
+  PRICE_BASIS_LABEL,
+  linkRunItems,
+  linkRunTotals,
+  type PriceBasis,
   CONTRACT_COLUMNS,
   CONTRACT_COLUMN_ORDER,
   extractStockCodeCompanies,
-  MONTH_LABELS,
   parsePurchaseHtml,
   QUARTER_LABELS,
   QUARTER_TOTAL_LABEL,
   type CodeAggregate,
   type PurchaseRow,
 } from "@/lib/contracts";
-import type { ContractMeta, ContractSettings } from "@/lib/contracts-store";
+import type {
+  ContractMeta,
+  ContractSettings,
+  ContractSlab,
+} from "@/lib/contracts-store";
 import {
   deleteContract,
   listContracts,
@@ -49,6 +57,11 @@ import { downloadJson } from "@/lib/backup";
 import { YasmenView } from "@/components/contracts/yasmen-view";
 import { MarginView } from "@/components/contracts/margin-view";
 import { ContractsDashboard } from "@/components/contracts/contracts-dashboard";
+import { InvoicesView } from "@/components/contracts/invoices-view";
+import {
+  ContractBreakdown,
+  ContractOverview,
+} from "@/components/contracts/contract-overview";
 
 const HTML_ACCEPT = ".htm,.html";
 
@@ -84,6 +97,23 @@ const normName = (s: string) =>
     .trim();
 
 const isHtml = (f: File) => /\.html?$/i.test(f.name);
+
+// Order-independent fingerprint of a contract's name + settings, to tell
+// whether there are changes that haven't been saved yet.
+function settingsSnapshot(name: string, s: ContractSettings | undefined): string {
+  const sorted = (a: string[] | undefined) => [...(a ?? [])].sort();
+  return JSON.stringify({
+    name: name.trim(),
+    companies: sorted(s?.companies),
+    target: s?.target ?? "",
+    excludedSuppliers: sorted(s?.excludedSuppliers),
+    excludedCodes: sorted(s?.excludedCodes),
+    slabs: (s?.slabs ?? []).map((x) => [x.target, x.pct]),
+    invoiceDates: Object.entries(s?.invoiceDates ?? {}).sort(),
+    priceBasis: s?.priceBasis ?? "incTax",
+    linkRuns: s?.linkRuns ?? false,
+  });
+}
 
 // Sanitize a contract name into a safe .xlsx filename stem.
 const safeFileStem = (s: string) =>
@@ -124,6 +154,7 @@ const NO_NUMERIC = new Set<string>();
 // Money columns carry an "(EGP)" header so it's clear the values are currency,
 // while staying real numbers so DataTable keeps formatting and sorting them.
 const CURRENCY = "EGP";
+
 const Q_TABLE_LABELS = QUARTER_LABELS.map((q) => `${q} (${CURRENCY})`);
 const TOTAL_TABLE_LABEL = `${QUARTER_TOTAL_LABEL} (${CURRENCY})`;
 const QUARTERLY_TABLE_COLUMNS = [
@@ -134,52 +165,7 @@ const QUARTERLY_TABLE_COLUMNS = [
 ];
 const QUARTERLY_NUMERIC = new Set<string>([...Q_TABLE_LABELS, TOTAL_TABLE_LABEL]);
 
-type View = "lines" | "quarters" | "yasmen" | "margin";
-
-// Horizontal bar list used for "spend by supplier" and "top items by spend".
-function HBars({
-  items,
-  unit,
-}: {
-  items: { label: string; value: number; hint?: string }[];
-  unit: string;
-}) {
-  if (items.length === 0)
-    return <p className="text-sm text-muted-foreground">No data.</p>;
-  const max = Math.max(...items.map((i) => i.value), 1);
-  const total = items.reduce((a, b) => a + b.value, 0) || 1;
-  return (
-    <div className="space-y-2.5">
-      {items.map((it) => (
-        <div
-          key={it.label}
-          className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3"
-        >
-          <div className="min-w-0">
-            <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-              <span className="truncate" dir="auto" title={it.hint ?? it.label}>
-                {it.label}
-              </span>
-              <span className="shrink-0 tabular-nums text-muted-foreground">
-                {((it.value / total) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-[width] duration-500"
-                style={{ width: `${(it.value / max) * 100}%` }}
-              />
-            </div>
-          </div>
-          <span className="whitespace-nowrap text-xs tabular-nums">
-            {it.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}{" "}
-            {unit}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
+type View = "lines" | "quarters" | "invoices" | "yasmen" | "margin";
 
 // Multi-select supplier filter (chips). Deselecting a supplier drops it from
 // the aggregates below — same interaction as the Quarterly tab.
@@ -487,6 +473,11 @@ export function ContractsClient() {
   // Set when a saved contract is open, so re-saving updates it in place. A
   // freshly built (unsaved) result leaves this null.
   const [currentId, setCurrentId] = React.useState<string | null>(null);
+  // Snapshot of the last saved/opened state (null = never saved), and whether
+  // freshly uploaded lines have been saved — together they drive the
+  // "unsaved changes" bar and the leave-page warning.
+  const [baseline, setBaseline] = React.useState<string | null>(null);
+  const [savedLive, setSavedLive] = React.useState(false);
   const [saved, setSaved] = React.useState<ContractMeta[]>([]);
   // True until the saved-contract list has first loaded (dashboard skeleton).
   const [loadingSaved, setLoadingSaved] = React.useState(true);
@@ -565,12 +556,25 @@ export function ContractsClient() {
   // Item codes the user has removed from the Total buy (via the quarterly
   // table's Ignore toggle). Excluded codes still show in the table (struck
   // through) but drop out of the totals, target readout and insight charts.
+  // How many quarterly-table rows show before it scrolls ("all" = no cap).
+  const [quarterRowsShown, setQuarterRowsShown] = React.useState("5");
   const [excludedCodes, setExcludedCodes] = React.useState<Set<string>>(
     new Set(),
   );
   // Yearly buy target (as typed); drives the achieved/remaining readout.
   // Remembered per company pick and saved with each contract.
   const [target, setTarget] = React.useState("");
+  // Rebate slabs (target → % incentive), e.g. 12M @ 2%, 13M @ 2.5%, 14M @ 3%.
+  const [slabs, setSlabs] = React.useState<ContractSlab[]>([]);
+  // Invoices moved to another date (invoiceKey → "yyyy/mm/dd") so they count
+  // in the right quarter.
+  // Unit price the buy value is measured on (contract-dependent).
+  const [priceBasis, setPriceBasis] = React.useState<PriceBasis>("incTax");
+  // Show تشغيلات (code variants of one product) as one row.
+  const [linkRuns, setLinkRuns] = React.useState(false);
+  const [invoiceDates, setInvoiceDates] = React.useState<
+    Record<string, string>
+  >({});
 
   // Company step: after upload the user searches companies (suppliers) by
   // name and checks one or more; only their lines are used. companies: null =
@@ -595,8 +599,21 @@ export function ContractsClient() {
       target,
       excludedSuppliers: [...excludedSuppliers],
       excludedCodes: [...excludedCodes],
+      slabs,
+      invoiceDates,
+      priceBasis,
+      linkRuns,
     }),
-    [companies, target, excludedSuppliers, excludedCodes],
+    [
+      companies,
+      target,
+      excludedSuppliers,
+      excludedCodes,
+      slabs,
+      invoiceDates,
+      priceBasis,
+      linkRuns,
+    ],
   );
 
   // Mirror the live (uploaded, not a reopened saved contract) settings into
@@ -614,6 +631,10 @@ export function ContractsClient() {
 
   const restoreSettings = (s: ContractSettings | undefined) => {
     setTarget(s?.target ?? "");
+    setSlabs(s?.slabs ?? []);
+    setInvoiceDates(s?.invoiceDates ?? {});
+    setPriceBasis(s?.priceBasis ?? "incTax");
+    setLinkRuns(s?.linkRuns ?? false);
     setExcludedSuppliers(new Set(s?.excludedSuppliers ?? []));
     setExcludedCodes(new Set(s?.excludedCodes ?? []));
     // Suppliers were already reviewed for this pick — go straight to totals.
@@ -672,6 +693,9 @@ export function ContractsClient() {
     );
     setCurrentId(existing?.id ?? null);
     setName(existing?.name ?? (all ? "" : chosen.join("، ")));
+    setBaseline(
+      existing ? settingsSnapshot(existing.name, existing.settings) : null,
+    );
     // Restore this pick's target + exclusions (this PC first, else the saved
     // contract's).
     restoreSettings(
@@ -709,6 +733,12 @@ export function ContractsClient() {
     [companyRows, excludedSuppliers],
   );
 
+  // Same lines with moved invoices re-dated — feeds every quarter / month total.
+  const datedRows = React.useMemo(
+    () => applyInvoiceDates(supplierFilteredRows, invoiceDates),
+    [supplierFilteredRows, invoiceDates],
+  );
+
   const toggleSupplier = (name: string) =>
     setExcludedSuppliers((prev) => {
       const next = new Set(prev);
@@ -720,8 +750,8 @@ export function ContractsClient() {
   // Per-code buy totals split by quarter, bonus lines (أساسي = 100%) removed,
   // limited to the suppliers the user kept selected.
   const quarterly = React.useMemo(
-    () => computeQuarterlyTotals(supplierFilteredRows),
-    [supplierFilteredRows],
+    () => computeQuarterlyTotals(datedRows, priceBasis),
+    [datedRows, priceBasis],
   );
 
   // Grand total per quarter (sum across all codes the user kept), for the bar
@@ -746,22 +776,42 @@ export function ContractsClient() {
   const activeRows = React.useMemo(
     () =>
       excludedCodes.size === 0
-        ? supplierFilteredRows
-        : supplierFilteredRows.filter(
+        ? datedRows
+        : datedRows.filter(
             (r) => !excludedCodes.has(r[CONTRACT_COLUMNS.code]),
           ),
-    [supplierFilteredRows, excludedCodes],
+    [datedRows, excludedCodes],
   );
   const insights = React.useMemo(
-    () => computeInsights(activeRows),
-    [activeRows],
+    () => computeInsights(activeRows, priceBasis),
+    [activeRows, priceBasis],
   );
+
+  // Table rows: per code, or one per product with its تشغيلات linked (codes
+  // joined by "|", which is also the row id the Ignore toggle works on).
+  const tableTotals = React.useMemo(
+    () => (linkRuns ? linkRunTotals(quarterly.totals) : quarterly.totals),
+    [quarterly, linkRuns],
+  );
+  const rowIgnored = (id: string) =>
+    id.split("|").every((c) => excludedCodes.has(c));
+  const toggleRowIgnored = (id: string) =>
+    setExcludedCodes((prev) => {
+      const codes = id.split("|");
+      const next = new Set(prev);
+      const all = codes.every((c) => next.has(c));
+      for (const c of codes) {
+        if (all) next.delete(c);
+        else next.add(c);
+      }
+      return next;
+    });
 
   const quarterlyRows = React.useMemo<DataRow[]>(
     () =>
-      quarterly.totals.map((t) => ({
+      tableTotals.map((t) => ({
         __id: t.code,
-        [CONTRACT_COLUMNS.code]: t.code,
+        [CONTRACT_COLUMNS.code]: t.code.split("|").join(" · "),
         [CONTRACT_COLUMNS.product]: t.product,
         [Q_TABLE_LABELS[0]]: t.quarters[0],
         [Q_TABLE_LABELS[1]]: t.quarters[1],
@@ -769,7 +819,7 @@ export function ContractsClient() {
         [Q_TABLE_LABELS[3]]: t.quarters[3],
         [TOTAL_TABLE_LABEL]: t.total,
       })),
-    [quarterly],
+    [tableTotals],
   );
 
   // Export the quarterly buy totals (one row per code) to an .xlsx. Codes the
@@ -780,15 +830,15 @@ export function ContractsClient() {
       return;
     }
     try {
-      const data = quarterly.totals.map((t) => ({
-        "كود الصنف": t.code,
+      const data = tableTotals.map((t) => ({
+        "كود الصنف": t.code.split("|").join(" · "),
         "اسم الصنف": t.product,
         [QUARTER_LABELS[0]]: t.quarters[0],
         [QUARTER_LABELS[1]]: t.quarters[1],
         [QUARTER_LABELS[2]]: t.quarters[2],
         [QUARTER_LABELS[3]]: t.quarters[3],
         [`${QUARTER_TOTAL_LABEL} (${CURRENCY})`]: t.total,
-        مستبعد: excludedCodes.has(t.code) ? "نعم" : "",
+        مستبعد: rowIgnored(t.code) ? "نعم" : "",
       }));
       await downloadSheet(
         data,
@@ -824,6 +874,7 @@ export function ContractsClient() {
       setPurchaseFiles((prev) => [...prev, ...names]);
       setCurrentId(null);
       setSavedInfo(null);
+      setSavedLive(false);
       setExcludedSuppliers(new Set());
       setExcludedCodes(new Set());
       setShowQuarters(false);
@@ -867,6 +918,7 @@ export function ContractsClient() {
       );
       setCurrentId(null);
       setSavedInfo(null);
+      setSavedLive(false);
       setExcludedSuppliers(new Set());
       setExcludedCodes(new Set());
       setShowQuarters(false);
@@ -890,8 +942,33 @@ export function ContractsClient() {
   const currentMine =
     saved.find((c) => c.id === currentId)?.canEdit !== false;
 
+  // Unsaved = new lines never saved, or settings/name changed since the last
+  // save/open. Only once results are on screen (a company pick is made).
+  const dirty =
+    purchaseRows.length > 0 &&
+    companies !== null &&
+    ((savedInfo === null && !savedLive) ||
+      baseline !== settingsSnapshot(name, settings));
+
+  const confirmDiscard = () =>
+    !dirty ||
+    window.confirm(
+      "You have unsaved changes (slabs, invoice moves, settings or new data). Discard them?",
+    );
+
+  // Browser warning when closing / reloading with unsaved changes.
+  React.useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
   const save = async () => {
     setSaving(true);
+    const snap = settingsSnapshot(name, settings);
     try {
       const rows: Cell[][] = companyRows.map((r) =>
         CONTRACT_COLUMN_ORDER.map((c) => r[c] ?? ""),
@@ -907,8 +984,11 @@ export function ContractsClient() {
         rows,
         settings,
         achieved,
+        dataThrough: insights.lastDate,
       });
       setCurrentId(id);
+      setBaseline(snap);
+      setSavedLive(true);
       await refreshSaved();
       toast.success("Saved to the cloud");
     } catch (e) {
@@ -919,6 +999,7 @@ export function ContractsClient() {
   };
 
   const openSaved = async (id: string) => {
+    if (!confirmDiscard()) return;
     setBusy(true);
     setError(null);
     try {
@@ -950,6 +1031,8 @@ export function ContractsClient() {
       // keep its company list so re-saving keeps the pick.
       setCompanies(c.settings?.companies ?? []);
       restoreSettings(c.settings);
+      setBaseline(settingsSnapshot(c.name, c.settings));
+      setSavedLive(true);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open that contract");
     } finally {
@@ -989,6 +1072,9 @@ export function ContractsClient() {
   };
 
   const clearAll = () => {
+    if (!confirmDiscard()) return;
+    setBaseline(null);
+    setSavedLive(false);
     setPurchaseRows([]);
     setPurchaseFiles([]);
     setStockCodes(null);
@@ -1011,25 +1097,6 @@ export function ContractsClient() {
   // or when viewing a saved contract (which already had both).
   const bothReady = hasData && (hasStock || savedInfo !== null);
 
-  const targetNum = Number(target) || 0;
-  const remaining = Math.round((targetNum - achieved) * 100) / 100;
-  const targetPct =
-    targetNum > 0 ? Math.min(100, (achieved / targetNum) * 100) : 0;
-  const money = (v: number) =>
-    `${v.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${CURRENCY}`;
-
-  // Run-rate projection: extrapolate the current pace to a full 12 months.
-  const elapsedMonths = insights.lastMonthWithData + 1; // 0 when no data
-  const projectedYear =
-    elapsedMonths > 0
-      ? Math.round((achieved / elapsedMonths) * 12 * 100) / 100
-      : 0;
-  const currentQuarter = Math.ceil(elapsedMonths / 3); // 1..4
-  const remainingQuarters = Math.max(0, 4 - currentQuarter);
-  const perRemainingQuarter =
-    remaining > 0 && remainingQuarters > 0
-      ? Math.round((remaining / remainingQuarters) * 100) / 100
-      : 0;
   const totalLines = savedInfo?.totalLineCount ?? purchaseRows.length;
   const stockCount = savedInfo?.stockCodeCount ?? stockCodes?.length ?? 0;
 
@@ -1320,8 +1387,9 @@ export function ContractsClient() {
             {(
               [
                 ["quarters", "Quarterly totals"],
-                ["lines", "Purchase lines"],
-                ["margin", "Best supplier"],
+                ["invoices", "Invoices"],
+                // ["lines", "Purchase lines"], — hidden for now
+                // ["margin", "Best supplier"], — hidden for now
                 ["yasmen", "Yasmen mode"],
               ] as [View, string][]
             ).map(([v, label]) => (
@@ -1410,9 +1478,37 @@ export function ContractsClient() {
 
               {showQuarters && (
                 <>
+                  {/* Which unit price the contract target is measured on. */}
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3">
+                    <span className="text-sm font-semibold">
+                      Calculate buy on
+                    </span>
+                    <div className="inline-flex rounded-lg border border-border bg-secondary p-0.5 text-sm">
+                      {(["incTax", "exTax"] as PriceBasis[]).map((b) => (
+                        <button
+                          key={b}
+                          type="button"
+                          onClick={() => setPriceBasis(b)}
+                          aria-pressed={priceBasis === b}
+                          className={cn(
+                            "rounded-md px-3 py-1.5 font-medium transition-colors",
+                            priceBasis === b
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {PRICE_BASIS_LABEL[b]}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      Pick the price the company measures the target on — saved
+                      with the contract.
+                    </span>
+                  </div>
                   <p className="text-sm text-muted-foreground">
-                    Buy value = كمية الوارد × سعر الوحدة شامل الضريبة, per
-                    calendar quarter.{" "}
+                    Buy value = كمية الوارد × {PRICE_BASIS_LABEL[priceBasis]},
+                    per calendar quarter.{" "}
                     {quarterly.totals.length.toLocaleString()} items ·{" "}
                     {quarterly.bonusExcluded.toLocaleString()} bonus line
                     {quarterly.bonusExcluded === 1 ? "" : "s"} (أساسي = 100%)
@@ -1433,139 +1529,22 @@ export function ContractsClient() {
                     )}
                   </p>
 
-                  {/* Yearly target vs. what's achieved so far. */}
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <label
-                        htmlFor="year-target"
-                        className="text-sm font-semibold"
-                      >
-                        Year target
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="year-target"
-                          type="number"
-                          inputMode="decimal"
-                          min={0}
-                          value={target}
-                          onChange={(e) => setTarget(e.target.value)}
-                          placeholder="e.g. 1000000"
-                          className="h-9 w-48 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
-                        />
-                        <span className="text-sm text-muted-foreground">
-                          {CURRENCY}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-x-8 gap-y-1 text-sm">
-                      <span className="text-muted-foreground">
-                        Achieved:{" "}
-                        <b className="tabular-nums text-foreground">
-                          {money(achieved)}
-                        </b>
-                      </span>
-                      {targetNum > 0 && (
-                        <>
-                          <span className="text-muted-foreground">
-                            Remaining:{" "}
-                            <b
-                              className={cn(
-                                "tabular-nums",
-                                remaining > 0
-                                  ? "text-foreground"
-                                  : "text-primary",
-                              )}
-                            >
-                              {remaining > 0
-                                ? money(remaining)
-                                : `Reached (+${money(-remaining)})`}
-                            </b>
-                          </span>
-                          <span className="text-muted-foreground">
-                            Progress:{" "}
-                            <b className="tabular-nums text-foreground">
-                              {targetPct.toFixed(1)}%
-                            </b>
-                          </span>
-                        </>
-                      )}
-                    </div>
-
-                    {targetNum > 0 && (
-                      <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary transition-[width] duration-500"
-                          style={{ width: `${targetPct}%` }}
-                        />
-                      </div>
-                    )}
-
-                    {targetNum > 0 && elapsedMonths > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-x-8 gap-y-1 border-t border-border pt-3 text-sm">
-                        <span className="text-muted-foreground">
-                          Projected year-end (at current pace):{" "}
-                          <b
-                            className={cn(
-                              "tabular-nums",
-                              projectedYear >= targetNum
-                                ? "text-primary"
-                                : "text-foreground",
-                            )}
-                          >
-                            {money(projectedYear)}
-                          </b>{" "}
-                          {projectedYear >= targetNum ? "— on track" : "— behind"}
-                        </span>
-                        {remaining > 0 && remainingQuarters > 0 && (
-                          <span className="text-muted-foreground">
-                            Needed per remaining quarter ({remainingQuarters}):{" "}
-                            <b className="tabular-nums text-foreground">
-                              {money(perRemainingQuarter)}
-                            </b>
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Total buy per quarter, bars side by side. */}
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <div className="mb-4 text-sm font-semibold">
-                      Total buy by quarter
-                    </div>
-                    <div className="flex items-end justify-around gap-4 sm:gap-8">
-                      {quarterTotals.map((v, i) => {
-                        const max = Math.max(...quarterTotals, 1);
-                        const heightPx = Math.max(
-                          v > 0 ? (v / max) * 180 : 0,
-                          v > 0 ? 4 : 0,
-                        );
-                        return (
-                          <div
-                            key={QUARTER_LABELS[i]}
-                            className="flex flex-1 flex-col items-center gap-2"
-                          >
-                            <span className="text-xs font-medium tabular-nums text-muted-foreground">
-                              {v.toLocaleString(undefined, {
-                                maximumFractionDigits: 0,
-                              })}{" "}
-                              {CURRENCY}
-                            </span>
-                            <div
-                              className="w-full max-w-16 rounded-t-md bg-primary transition-[height] duration-500"
-                              style={{ height: heightPx }}
-                              title={v.toLocaleString()}
-                            />
-                            <span className="text-sm font-medium">
-                              {QUARTER_LABELS[i]}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  <ContractOverview
+                    achieved={achieved}
+                    insights={insights}
+                    quarterTotals={quarterTotals}
+                    slabs={slabs}
+                    onSlabsChange={setSlabs}
+                    target={target}
+                    onTargetChange={setTarget}
+                    contractName={name}
+                    basisLabel={PRICE_BASIS_LABEL[priceBasis]}
+                    topItems={
+                      linkRuns
+                        ? linkRunItems(insights.topItems)
+                        : insights.topItems
+                    }
+                  />
 
                   <DataTable
                     key={`q-${currentId ?? "live"}`}
@@ -1573,17 +1552,51 @@ export function ContractsClient() {
                     rows={quarterlyRows}
                     numericColumns={QUARTERLY_NUMERIC}
                     ignorable={{
-                      isIgnored: (id) => excludedCodes.has(id),
-                      onToggle: (id) =>
-                        setExcludedCodes((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(id)) next.delete(id);
-                          else next.add(id);
-                          return next;
-                        }),
+                      isIgnored: rowIgnored,
+                      onToggle: toggleRowIgnored,
                     }}
+                    maxRows={quarterRowsShown === "all" ? Infinity : Number(quarterRowsShown)}
                     rightToolbar={
                       <div className="flex gap-2">
+                        <div
+                          className="inline-flex rounded-lg border border-border bg-secondary p-0.5 text-xs"
+                          title="تشغيلات: codes of one product that differ only by a price tag (ت.ق / ت.ج / ت.ج2 …)"
+                        >
+                          {(
+                            [
+                              [false, "By code"],
+                              [true, "Link تشغيلات"],
+                            ] as [boolean, string][]
+                          ).map(([v, label]) => (
+                            <button
+                              key={label}
+                              type="button"
+                              onClick={() => setLinkRuns(v)}
+                              aria-pressed={linkRuns === v}
+                              className={cn(
+                                "rounded-md px-2.5 py-1 font-medium transition-colors",
+                                linkRuns === v
+                                  ? "bg-background text-foreground shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <select
+                          value={quarterRowsShown}
+                          onChange={(e) => setQuarterRowsShown(e.target.value)}
+                          className="h-8 rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                          aria-label="Rows shown"
+                          title="Rows shown"
+                        >
+                          {["5", "10", "15", "25", "all"].map((v) => (
+                            <option key={v} value={v}>
+                              {v === "all" ? "Show all" : `Show ${v}`}
+                            </option>
+                          ))}
+                        </select>
                         <Button
                           variant="outline"
                           size="sm"
@@ -1598,94 +1611,23 @@ export function ContractsClient() {
                     }
                   />
 
-                  {/* Spend by supplier + top items. */}
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="rounded-xl border border-border bg-card p-4">
-                      <div className="mb-3 text-sm font-semibold">
-                        Spend by supplier
-                      </div>
-                      <HBars
-                        items={insights.bySupplier.map((s) => ({
-                          label: s.name,
-                          value: s.value,
-                        }))}
-                        unit={CURRENCY}
-                      />
-                    </div>
-                    <div className="rounded-xl border border-border bg-card p-4">
-                      <div className="mb-3 text-sm font-semibold">
-                        Top 10 items by spend
-                      </div>
-                      <HBars
-                        items={insights.topItems.slice(0, 10).map((t) => ({
-                          label: t.product || t.code,
-                          value: t.value,
-                          hint: `${t.code} — ${t.product}`,
-                        }))}
-                        unit={CURRENCY}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Monthly spend trend. */}
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <div className="mb-4 text-sm font-semibold">
-                      Monthly spend
-                    </div>
-                    <div className="flex items-end gap-1 sm:gap-2">
-                      {insights.byMonth.map((v, i) => {
-                        const max = Math.max(...insights.byMonth, 1);
-                        const heightPx = Math.max(
-                          v > 0 ? (v / max) * 140 : 0,
-                          v > 0 ? 3 : 0,
-                        );
-                        return (
-                          <div
-                            key={MONTH_LABELS[i]}
-                            className="flex flex-1 flex-col items-center gap-1"
-                          >
-                            <div
-                              className="w-full rounded-t bg-primary/80 transition-[height] duration-500"
-                              style={{ height: heightPx }}
-                              title={`${MONTH_LABELS[i]}: ${money(v)}`}
-                            />
-                            <span className="text-[10px] text-muted-foreground">
-                              {MONTH_LABELS[i]}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Bonus (بونص) received. */}
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <div className="mb-1 text-sm font-semibold">
-                      Bonus received (بونص)
-                    </div>
-                    <div className="flex flex-wrap gap-x-8 gap-y-1 text-sm text-muted-foreground">
-                      <span>
-                        Value:{" "}
-                        <b className="tabular-nums text-foreground">
-                          {money(insights.bonusValue)}
-                        </b>
-                      </span>
-                      <span>
-                        Free units:{" "}
-                        <b className="tabular-nums text-foreground">
-                          {insights.bonusUnits.toLocaleString()}
-                        </b>
-                        {insights.paidUnits > 0 &&
-                          ` (${(
-                            (insights.bonusUnits / insights.paidUnits) *
-                            100
-                          ).toFixed(1)}% of paid units)`}
-                      </span>
-                    </div>
-                  </div>
+                  <ContractBreakdown
+                    insights={
+                      linkRuns
+                        ? { ...insights, topItems: linkRunItems(insights.topItems) }
+                        : insights
+                    }
+                  />
                 </>
               )}
             </>
+          ) : view === "invoices" ? (
+            <InvoicesView
+              rows={supplierFilteredRows}
+              moves={invoiceDates}
+              onMovesChange={setInvoiceDates}
+              basis={priceBasis}
+            />
           ) : view === "lines" ? (
             <LinesView
               rows={supplierFilteredRows}
@@ -1718,6 +1660,36 @@ export function ContractsClient() {
             <YasmenView rows={companyRows} />
           )}
         </>
+      )}
+
+      {/* Floating "unsaved changes" bar. */}
+      {dirty && (
+        <div className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+          <div
+            role="status"
+            className="flex max-w-full items-center gap-3 rounded-2xl border border-viz-warn/50 bg-card/95 py-2 pl-4 pr-2 shadow-xl backdrop-blur"
+          >
+            <span className="relative flex size-2.5 shrink-0">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-viz-warn opacity-60" />
+              <span className="relative inline-flex size-2.5 rounded-full bg-viz-warn" />
+            </span>
+            <span className="text-sm">
+              <b className="font-semibold">Unsaved changes</b>
+              <span className="hidden text-muted-foreground sm:inline">
+                {" "}
+                — save to keep them for everyone
+              </span>
+            </span>
+            <Button size="sm" onClick={save} disabled={saving}>
+              {saving ? <Loader2 className="animate-spin" /> : <Save />}
+              {currentId && currentMine
+                ? "Update saved"
+                : currentId
+                  ? "Save as my copy"
+                  : "Save to cloud"}
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );

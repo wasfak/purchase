@@ -22,6 +22,7 @@ type LeanContract = {
   rows?: unknown[];
   settings?: unknown;
   achieved?: number | null;
+  dataThrough?: string;
 };
 
 // Keep only the known ContractSettings fields, as strings.
@@ -35,6 +36,25 @@ function cleanSettings(v: unknown) {
     target: typeof o.target === "string" ? o.target : "",
     excludedSuppliers: strs(o.excludedSuppliers),
     excludedCodes: strs(o.excludedCodes),
+    slabs: Array.isArray(o.slabs)
+      ? o.slabs
+          .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+          .map((s) => ({
+            target: typeof s.target === "string" ? s.target : "",
+            pct: typeof s.pct === "string" ? s.pct : "",
+          }))
+      : [],
+    invoiceDates:
+      o.invoiceDates && typeof o.invoiceDates === "object"
+        ? Object.fromEntries(
+            Object.entries(o.invoiceDates as Record<string, unknown>).filter(
+              (e): e is [string, string] =>
+                typeof e[1] === "string" && /^\d{4}\/\d{2}\/\d{2}$/.test(e[1]),
+            ),
+          )
+        : {},
+    priceBasis: o.priceBasis === "exTax" ? "exTax" : "incTax",
+    linkRuns: o.linkRuns === true,
   };
 }
 
@@ -84,6 +104,7 @@ function toMeta(
     columns: d.columns ?? [],
     settings: cleanSettings(d.settings) ?? undefined,
     achieved: typeof d.achieved === "number" ? d.achieved : undefined,
+    dataThrough: d.dataThrough || undefined,
   };
 }
 
@@ -149,6 +170,11 @@ export async function POST(request: Request) {
     achieved: Number.isFinite(Number(body.achieved))
       ? Number(body.achieved)
       : null,
+    dataThrough:
+      typeof body.dataThrough === "string" &&
+      /^\d{4}\/\d{2}\/\d{2}$/.test(body.dataThrough)
+        ? body.dataThrough
+        : "",
   };
 
   await connectDB();

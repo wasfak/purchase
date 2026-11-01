@@ -8,6 +8,8 @@
 //   2. A "stock" export containing item codes. We extract those codes and use
 //      them to filter the purchase lines down to items that exist in stock.
 
+import { productKey } from "@/lib/tasfya/productKey";
+
 /** Column keys, kept in Arabic to match the source report exactly. */
 export const CONTRACT_COLUMNS = {
   code: "كود الصنف",
@@ -162,6 +164,23 @@ export type QuarterlyTotal = {
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
+/** Which unit price the buy value is measured on, per contract. */
+export type PriceBasis = "incTax" | "exTax";
+
+export const PRICE_BASIS_LABEL: Record<PriceBasis, string> = {
+  incTax: "سعر الوحدة شامل الضريبة",
+  exTax: "سعر الوحدة بدون الضريبة",
+};
+
+/** Unit price of a line on the chosen basis: incl. tax, or incl. tax minus
+ *  the unit sales tax (ض مبيعات الوحدة). */
+export function unitPrice(r: PurchaseRow, basis: PriceBasis = "incTax"): number {
+  const inc = Number(r[CONTRACT_COLUMNS.priceIncTax]) || 0;
+  return basis === "exTax"
+    ? inc - (Number(r[CONTRACT_COLUMNS.salesTax]) || 0)
+    : inc;
+}
+
 /**
  * Aggregate purchase lines into per-code buy totals split by calendar quarter
  * (from the month of تاريخ الحركة, year ignored).
@@ -170,7 +189,10 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
  * where أساسي (basic discount) is 100%, i.e. the item was free (بونص) — are
  * excluded.
  */
-export function computeQuarterlyTotals(rows: PurchaseRow[]): {
+export function computeQuarterlyTotals(
+  rows: PurchaseRow[],
+  basis: PriceBasis = "incTax",
+): {
   totals: QuarterlyTotal[];
   bonusExcluded: number;
 } {
@@ -187,9 +209,7 @@ export function computeQuarterlyTotals(rows: PurchaseRow[]): {
     const qi = Math.ceil(Number(dm[1]) / 3) - 1;
     if (qi < 0 || qi > 3) continue;
 
-    const value =
-      (Number(r[CONTRACT_COLUMNS.qty]) || 0) *
-      (Number(r[CONTRACT_COLUMNS.priceIncTax]) || 0);
+    const value = (Number(r[CONTRACT_COLUMNS.qty]) || 0) * unitPrice(r, basis);
 
     const code = r[CONTRACT_COLUMNS.code];
     let entry = map.get(code);
@@ -219,6 +239,7 @@ export function computeAchieved(
   rows: PurchaseRow[],
   excludedSuppliers: string[] = [],
   excludedCodes: string[] = [],
+  basis: PriceBasis = "incTax",
 ): number {
   const sup = new Set(excludedSuppliers);
   const codes = new Set(excludedCodes);
@@ -226,7 +247,7 @@ export function computeAchieved(
     ? rows.filter((r) => !sup.has(r[CONTRACT_COLUMNS.supplier]))
     : rows;
   let sum = 0;
-  for (const t of computeQuarterlyTotals(kept).totals) {
+  for (const t of computeQuarterlyTotals(kept, basis).totals) {
     if (!codes.has(t.code)) sum += t.total;
   }
   return round2(sum);
@@ -326,6 +347,11 @@ export type Insights = {
   paidUnits: number;
   /** Highest month index (0-based) that has any purchases, or -1 if none. */
   lastMonthWithData: number;
+  /** Lowest month index (0-based) that has any purchases, or -1 if none. */
+  firstMonthWithData: number;
+  /** Earliest / latest purchase date ("yyyy/mm/dd"), "" if none. */
+  firstDate: string;
+  lastDate: string;
 };
 
 /**
@@ -333,7 +359,10 @@ export type Insights = {
  * Buy value of a paid line = كمية الوارد × سعر الوحدة شامل الضريبة; bonus lines
  * (أساسي = 100%) are tracked separately as free-goods value.
  */
-export function computeInsights(rows: PurchaseRow[]): Insights {
+export function computeInsights(
+  rows: PurchaseRow[],
+  basis: PriceBasis = "incTax",
+): Insights {
   const supplier = new Map<string, number>();
   const item = new Map<string, { product: string; value: number }>();
   const byMonth = new Array(12).fill(0) as number[];
@@ -341,10 +370,20 @@ export function computeInsights(rows: PurchaseRow[]): Insights {
   let bonusUnits = 0;
   let paidUnits = 0;
   let lastMonthWithData = -1;
+  let firstMonthWithData = -1;
+  let firstDate = "";
+  let lastDate = "";
 
   for (const r of rows) {
+    // Contract period spans every line (bonus included); "yyyy/mm/dd" sorts as text.
+    const date = /\d{4}\/\d{2}\/\d{2}/.exec(r[CONTRACT_COLUMNS.date] ?? "")?.[0];
+    if (date) {
+      if (!firstDate || date < firstDate) firstDate = date;
+      if (date > lastDate) lastDate = date;
+    }
+
     const qty = Number(r[CONTRACT_COLUMNS.qty]) || 0;
-    const value = qty * (Number(r[CONTRACT_COLUMNS.priceIncTax]) || 0);
+    const value = qty * unitPrice(r, basis);
     const isBonus = Number(r[CONTRACT_COLUMNS.basic]) === 100;
 
     if (isBonus) {
@@ -370,6 +409,8 @@ export function computeInsights(rows: PurchaseRow[]): Insights {
       if (mi >= 0 && mi < 12) {
         byMonth[mi] += value;
         if (mi > lastMonthWithData) lastMonthWithData = mi;
+        if (firstMonthWithData < 0 || mi < firstMonthWithData)
+          firstMonthWithData = mi;
       }
     }
   }
@@ -388,6 +429,9 @@ export function computeInsights(rows: PurchaseRow[]): Insights {
     bonusUnits: round2(bonusUnits),
     paidUnits: round2(paidUnits),
     lastMonthWithData,
+    firstMonthWithData,
+    firstDate,
+    lastDate,
   };
 }
 
@@ -778,4 +822,162 @@ export function extractStockCodeCompanies(html: string): Map<string, string> {
     if (!out.has(code) || (!out.get(code) && company)) out.set(code, company);
   }
   return out;
+}
+
+// --- تشغيلات (linked code variants) -----------------------------------------
+//
+// One product lives under several codes whose names differ only by a
+// price-generation tag (ت.ق, ت.ج, ت.ج2…, ن.ج1…). When linked, rows are grouped
+// by productKey (tags stripped) and shown as one item.
+
+/** Product name with price-generation tags / cross-refs removed, case kept. */
+export function runBaseName(name: string): string {
+  return String(name ?? "")
+    .replace(/#[^#]*#/g, " ")
+    .replace(/ت\s*\.\s*ق/g, " ")
+    .replace(/ت\s*\.\s*ج\s*\d*/g, " ")
+    .replace(/ن\s*\.\s*ج\s*\d*/g, " ")
+    .replace(/كود\s+(?:جديد|قديم)\s*\d*/g, " ")
+    .replace(/ـ/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Group per-code quarterly totals into one entry per product (codes joined
+ *  with "|"), biggest total first. */
+export function linkRunTotals(totals: QuarterlyTotal[]): QuarterlyTotal[] {
+  const map = new Map<string, { codes: string[]; product: string; q: number[] }>();
+  for (const t of totals) {
+    const key = productKey(t.product) || t.code;
+    let g = map.get(key);
+    if (!g) {
+      g = { codes: [], product: runBaseName(t.product) || t.product, q: [0, 0, 0, 0] };
+      map.set(key, g);
+    }
+    g.codes.push(t.code);
+    for (let i = 0; i < 4; i++) g.q[i] += t.quarters[i];
+  }
+  return [...map.values()]
+    .map((g) => {
+      const quarters = g.q.map(round2) as QuarterlyTotal["quarters"];
+      return {
+        code: g.codes.join("|"),
+        product: g.product,
+        quarters,
+        total: round2(quarters.reduce((a, b) => a + b, 0)),
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+}
+
+/** Same grouping for the "top items" list. */
+export function linkRunItems(
+  items: Insights["topItems"],
+): Insights["topItems"] {
+  const map = new Map<string, { codes: string[]; product: string; value: number }>();
+  for (const it of items) {
+    const key = productKey(it.product) || it.code;
+    const g = map.get(key);
+    if (g) {
+      g.codes.push(it.code);
+      g.value += it.value;
+    } else
+      map.set(key, {
+        codes: [it.code],
+        product: runBaseName(it.product) || it.product,
+        value: it.value,
+      });
+  }
+  return [...map.values()]
+    .map((g) => ({ code: g.codes.join(" · "), product: g.product, value: round2(g.value) }))
+    .sort((a, b) => b.value - a.value);
+}
+
+// --- Invoice date moves -------------------------------------------------------
+//
+// A distributor sometimes prints an invoice a few days after the real sale
+// (e.g. printed 2026/10/01 but belongs to 2026/09/28), which pushes it into the
+// wrong quarter. The user can move a whole invoice to another date; the moves
+// are kept per contract as { invoiceKey: "yyyy/mm/dd" } and applied to the
+// lines before any quarterly / monthly totals are computed.
+
+const DATE_RE = /\d{4}\/\d{2}\/\d{2}/;
+
+/** One invoice = supplier + invoice number. */
+export function invoiceKey(r: PurchaseRow): string {
+  return `${r[CONTRACT_COLUMNS.supplier] ?? ""}|${r[CONTRACT_COLUMNS.invoice] ?? ""}`;
+}
+
+/** Lines with each moved invoice's date replaced by its new date. */
+export function applyInvoiceDates(
+  rows: PurchaseRow[],
+  moves: Record<string, string>,
+): PurchaseRow[] {
+  if (Object.keys(moves).length === 0) return rows;
+  return rows.map((r) => {
+    const to = moves[invoiceKey(r)];
+    if (!to) return r;
+    const d = r[CONTRACT_COLUMNS.date] ?? "";
+    return {
+      ...r,
+      [CONTRACT_COLUMNS.date]: DATE_RE.test(d) ? d.replace(DATE_RE, to) : to,
+    };
+  });
+}
+
+export type InvoiceSummary = {
+  key: string;
+  supplier: string;
+  invoice: string;
+  date: string; // original "yyyy/mm/dd" (earliest line)
+  branches: string[];
+  lines: number;
+  bonusLines: number;
+  value: number; // paid lines: qty × price incl. tax
+};
+
+/** Roll purchase lines up to one summary per invoice, newest first. */
+export function summarizeInvoices(
+  rows: PurchaseRow[],
+  basis: PriceBasis = "incTax",
+): InvoiceSummary[] {
+  const map = new Map<string, InvoiceSummary & { branchSet: Set<string> }>();
+  for (const r of rows) {
+    const key = invoiceKey(r);
+    const date = DATE_RE.exec(r[CONTRACT_COLUMNS.date] ?? "")?.[0] ?? "";
+    let e = map.get(key);
+    if (!e) {
+      e = {
+        key,
+        supplier: r[CONTRACT_COLUMNS.supplier] ?? "",
+        invoice: r[CONTRACT_COLUMNS.invoice] ?? "",
+        date,
+        branches: [],
+        branchSet: new Set(),
+        lines: 0,
+        bonusLines: 0,
+        value: 0,
+      };
+      map.set(key, e);
+    }
+    if (date && (!e.date || date < e.date)) e.date = date;
+    if (r[CONTRACT_COLUMNS.branch]) e.branchSet.add(r[CONTRACT_COLUMNS.branch]);
+    e.lines++;
+    if (Number(r[CONTRACT_COLUMNS.basic]) === 100) e.bonusLines++;
+    else
+      e.value += (Number(r[CONTRACT_COLUMNS.qty]) || 0) * unitPrice(r, basis);
+  }
+  return [...map.values()]
+    .map(({ branchSet, ...e }) => ({
+      ...e,
+      branches: [...branchSet],
+      value: round2(e.value),
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date) || a.invoice.localeCompare(b.invoice));
+}
+
+/** 0-based quarter of a "yyyy/mm/dd" date, or -1. */
+export function quarterOf(date: string): number {
+  const m = Number(date.slice(5, 7));
+  return m >= 1 && m <= 12 ? Math.floor((m - 1) / 3) : -1;
 }

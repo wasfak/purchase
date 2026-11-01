@@ -22,6 +22,11 @@
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
+  --color-viz-1: var(--viz-1);
+  --color-viz-good: var(--viz-good);
+  --color-viz-good-ink: var(--viz-good-ink);
+  --color-viz-warn: var(--viz-warn);
+  --color-viz-warn-ink: var(--viz-warn-ink);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -72,6 +77,12 @@
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
+  /* Data-viz accent + status (validated dataviz palette; status = icon + label). */
+  --viz-1: #2a78d6;
+  --viz-good: #0ca30c;
+  --viz-good-ink: #006300;
+  --viz-warn: #fab219;
+  --viz-warn-ink: #8a5a00;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -106,6 +117,11 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  --viz-1: #3987e5;
+  --viz-good: #0ca30c;
+  --viz-good-ink: #0ca30c;
+  --viz-warn: #fab219;
+  --viz-warn-ink: #fab219;
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

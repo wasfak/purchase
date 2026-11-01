@@ -24,6 +24,8 @@ const ContractDocSchema = new Schema(
     settings: { type: Schema.Types.Mixed, default: null },
     // Total buy at save time (after exclusions), for the dashboard cards.
     achieved: { type: Number, default: null },
+    // Latest purchase date in the contract's lines ("yyyy/mm/dd").
+    dataThrough: { type: String, default: "" },
     // Array of rows, each a values-array (Cell[]) aligned to `columns`.
     rows: { type: [Schema.Types.Mixed], default: [] },
   },

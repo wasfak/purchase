@@ -2,12 +2,19 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Download, Loader2, Target, Trash2, User } from "lucide-react";
+import {
+  CalendarClock,
+  Download,
+  Loader2,
+  Target,
+  Trash2,
+  User,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { computeAchieved, type PurchaseRow } from "@/lib/contracts";
-import type { ContractMeta } from "@/lib/contracts-store";
+import { slabStatuses, type ContractMeta } from "@/lib/contracts-store";
 import { loadContract } from "@/lib/server-contracts-store";
 
 const CURRENCY = "EGP";
@@ -17,7 +24,15 @@ const money = (v: number) =>
 
 // Animated target-vs-achieved donut. Fills to `pct` (0..100+); turns green
 // once the target is reached.
-function Donut({ pct, hasTarget }: { pct: number; hasTarget: boolean }) {
+function Donut({
+  pct,
+  hasTarget,
+  caption = "of target",
+}: {
+  pct: number;
+  hasTarget: boolean;
+  caption?: string;
+}) {
   const r = 52;
   const c = 2 * Math.PI * r;
   const shown = Math.min(100, Math.max(0, pct));
@@ -29,13 +44,13 @@ function Donut({ pct, hasTarget }: { pct: number; hasTarget: boolean }) {
           <linearGradient id="donut-grad" x1="0" y1="0" x2="1" y2="1">
             <stop
               offset="0%"
-              style={{ stopColor: "var(--primary)", stopOpacity: 0.65 }}
+              style={{ stopColor: "var(--viz-1)", stopOpacity: 0.6 }}
             />
-            <stop offset="100%" style={{ stopColor: "var(--primary)" }} />
+            <stop offset="100%" style={{ stopColor: "var(--viz-1)" }} />
           </linearGradient>
           <linearGradient id="donut-grad-done" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#34d399" />
-            <stop offset="100%" stopColor="#059669" />
+            <stop offset="0%" style={{ stopColor: "var(--viz-good)", stopOpacity: 0.7 }} />
+            <stop offset="100%" style={{ stopColor: "var(--viz-good)" }} />
           </linearGradient>
         </defs>
         <circle
@@ -68,13 +83,13 @@ function Donut({ pct, hasTarget }: { pct: number; hasTarget: boolean }) {
             <span
               className={cn(
                 "text-2xl font-bold tabular-nums",
-                reached && "text-emerald-600 dark:text-emerald-400",
+                reached && "text-viz-good-ink",
               )}
             >
               {pct.toFixed(pct >= 100 ? 0 : 1)}%
             </span>
             <span className="text-[11px] text-muted-foreground">
-              {reached ? "reached" : "of target"}
+              {reached ? "reached" : caption}
             </span>
           </>
         ) : (
@@ -84,6 +99,30 @@ function Donut({ pct, hasTarget }: { pct: number; hasTarget: boolean }) {
         )}
       </div>
     </div>
+  );
+}
+
+// "Data through 31 Oct 2026" — the latest purchase date in the saved lines,
+// flagged once it's more than a week old so a stale card is obvious.
+function DataThrough({ date }: { date: string }) {
+  const [y, m, d] = date.split("/").map(Number);
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const days = Math.floor((Date.now() - Date.UTC(y, m - 1, d)) / 86_400_000);
+  const stale = days > 7;
+  return (
+    <p
+      className={cn(
+        "mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium",
+        stale
+          ? "bg-viz-warn/18 text-viz-warn-ink"
+          : "bg-muted text-muted-foreground",
+      )}
+      title="Latest purchase date in this contract's uploaded lines"
+    >
+      <CalendarClock className="size-3" />
+      Data through {d} {MONTHS[m - 1]} {y}
+      {stale && ` · ${days} days old`}
+    </p>
   );
 }
 
@@ -100,8 +139,16 @@ function ContractCard({
   onOpen: () => void;
   onDelete: () => void;
 }) {
-  const target = Number(meta.settings?.target) || 0;
+  // Delete asks "are you sure?" inside the card first.
+  const [confirming, setConfirming] = React.useState(false);
   const value = achieved ?? 0;
+  const slabs = slabStatuses(meta.settings?.slabs, value);
+  const reachedSlab = slabs.filter((s) => s.reached).at(-1);
+  const nextSlab = slabs.find((s) => !s.reached);
+  // With slabs, the target is the next slab to reach (top one once all are).
+  const target =
+    (slabs.find((s) => !s.reached) ?? slabs.at(-1))?.target ??
+    (Number(meta.settings?.target) || 0);
   const pct = target > 0 ? (value / target) * 100 : 0;
   const remaining = target - value;
 
@@ -130,6 +177,7 @@ function ContractCard({
             {new Date(meta.savedAt).toLocaleDateString()} ·{" "}
             {meta.matchedLineCount.toLocaleString()} lines
           </p>
+          {meta.dataThrough && <DataThrough date={meta.dataThrough} />}
           {meta.ownerName && (
             <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
               <User className="size-3" />
@@ -143,7 +191,7 @@ function ContractCard({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onDelete();
+              setConfirming(true);
             }}
             className="text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
             title="Delete saved contract"
@@ -160,7 +208,11 @@ function ContractCard({
             <Loader2 className="size-6 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          <Donut pct={pct} hasTarget={target > 0} />
+          <Donut
+            pct={pct}
+            hasTarget={target > 0}
+            caption={nextSlab ? `of slab ${slabs.indexOf(nextSlab) + 1}` : undefined}
+          />
         )}
         <dl className="min-w-0 flex-1 space-y-2 text-sm">
           <div>
@@ -183,7 +235,7 @@ function ContractCard({
               <dd
                 className={cn(
                   "font-semibold tabular-nums",
-                  remaining <= 0 && "text-emerald-600 dark:text-emerald-400",
+                  remaining <= 0 && "text-viz-good-ink",
                 )}
               >
                 {remaining > 0 ? money(remaining) : `+${money(-remaining)}`}
@@ -192,6 +244,82 @@ function ContractCard({
           )}
         </dl>
       </div>
+
+      {/* Slab ladder: one pill per slab, filled once reached. */}
+      {slabs.length > 0 && achieved !== undefined && (
+        <div className="flex items-center gap-2 border-t border-border pt-3">
+          <div className="flex flex-1 gap-1">
+            {slabs.map((s, i) => (
+              <span
+                key={s.target}
+                title={`Slab ${i + 1}: ${money(s.target)} → ${s.pct}% = ${money(s.incentive)}`}
+                className={cn(
+                  "flex h-6 flex-1 items-center justify-center rounded-md text-[10px] font-semibold",
+                  s.reached
+                    ? "bg-viz-good/15 text-viz-good-ink"
+                    : s === nextSlab
+                      ? "border border-viz-1/50 text-viz-1"
+                      : "bg-muted text-muted-foreground",
+                )}
+              >
+                S{i + 1} · {s.pct}%
+              </span>
+            ))}
+          </div>
+          <span
+            className={cn(
+              "shrink-0 text-xs font-semibold tabular-nums",
+              reachedSlab ? "text-viz-good-ink" : "text-muted-foreground",
+            )}
+          >
+            {reachedSlab ? `+${money(reachedSlab.incentive)}` : "No rebate yet"}
+          </span>
+        </div>
+      )}
+
+      {confirming && (
+        <div
+          role="alertdialog"
+          aria-label={`Delete ${meta.name}?`}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Escape") setConfirming(false);
+          }}
+          className="absolute inset-0 z-10 flex cursor-default flex-col items-center justify-center gap-4 rounded-2xl bg-card/95 p-6 text-center backdrop-blur-sm"
+        >
+          <span className="flex size-11 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+            <Trash2 className="size-5" />
+          </span>
+          <div>
+            <p className="font-semibold">Delete this contract?</p>
+            <p className="mt-1 text-sm text-muted-foreground" dir="auto">
+              «{meta.name}» will be removed for everyone. This can&apos;t be
+              undone.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              autoFocus
+              onClick={() => setConfirming(false)}
+            >
+              No, keep it
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setConfirming(false);
+                onDelete();
+              }}
+            >
+              Yes, delete
+            </Button>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -299,6 +427,7 @@ export function ContractsDashboard({
             rows,
             c.settings?.excludedSuppliers,
             c.settings?.excludedCodes,
+            c.settings?.priceBasis,
           );
           if (active) {
             setComputed((prev) => ({ ...prev, [`${m.id}:${m.savedAt}`]: value }));

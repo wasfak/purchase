@@ -22,6 +22,7 @@ type LeanContract = {
   rows?: unknown[];
   settings?: ContractSettings | null;
   achieved?: number | null;
+  dataThrough?: string;
 };
 
 // GET /api/contracts/[id] — one saved contract with its rows, or null. Any
@@ -55,6 +56,7 @@ export async function GET(
       rows: d.rows ?? [],
       settings: d.settings ?? undefined,
       achieved: typeof d.achieved === "number" ? d.achieved : undefined,
+      dataThrough: d.dataThrough || undefined,
     },
   });
 }

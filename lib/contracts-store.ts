@@ -20,7 +20,38 @@ export type ContractSettings = {
   target: string; // year target as typed
   excludedSuppliers: string[]; // distributor chips switched off
   excludedCodes: string[]; // codes removed from the Total buy
+  slabs?: ContractSlab[]; // rebate slabs (ascending target), as typed
+  invoiceDates?: Record<string, string>; // invoiceKey → moved "yyyy/mm/dd"
+  priceBasis?: "incTax" | "exTax"; // unit price the buy is measured on
+  linkRuns?: boolean; // group تشغيلات (price-tag code variants) into one row
 };
+
+/** One rebate slab: reach `target` buy → earn `pct`% of it as incentive. */
+export type ContractSlab = { target: string; pct: string };
+
+export type SlabStatus = {
+  target: number;
+  pct: number;
+  incentive: number; // target × pct%
+  reached: boolean;
+};
+
+/** Parse typed slabs (dropping empty ones), sorted by target, with whether
+ *  `achieved` reached each. */
+export function slabStatuses(
+  slabs: ContractSlab[] | undefined,
+  achieved: number,
+): SlabStatus[] {
+  return (slabs ?? [])
+    .map((s) => ({ target: Number(s.target) || 0, pct: Number(s.pct) || 0 }))
+    .filter((s) => s.target > 0)
+    .sort((a, b) => a.target - b.target)
+    .map((s) => ({
+      ...s,
+      incentive: Math.round(s.target * s.pct) / 100,
+      reached: achieved >= s.target,
+    }));
+}
 
 export type ContractMeta = {
   id: string;
@@ -37,6 +68,7 @@ export type ContractMeta = {
   matchedLineCount: number; // lines kept (code found in stock)
   settings?: ContractSettings;
   achieved?: number; // total buy at save time (after exclusions)
+  dataThrough?: string; // latest purchase date in the lines ("yyyy/mm/dd")
   columns: string[];
 };
 
