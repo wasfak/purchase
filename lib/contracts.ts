@@ -187,11 +187,12 @@ export function unitPrice(r: PurchaseRow, basis: PriceBasis = "incTax"): number 
  *
  * Buy value of a line = كمية الوارد × سعر الوحدة شامل الضريبة. Bonus lines —
  * where أساسي (basic discount) is 100%, i.e. the item was free (بونص) — are
- * excluded.
+ * excluded. With `units`, each line counts its كمية الوارد instead of its value.
  */
 export function computeQuarterlyTotals(
   rows: PurchaseRow[],
   basis: PriceBasis = "incTax",
+  units = false,
 ): {
   totals: QuarterlyTotal[];
   bonusExcluded: number;
@@ -209,7 +210,8 @@ export function computeQuarterlyTotals(
     const qi = Math.ceil(Number(dm[1]) / 3) - 1;
     if (qi < 0 || qi > 3) continue;
 
-    const value = (Number(r[CONTRACT_COLUMNS.qty]) || 0) * unitPrice(r, basis);
+    const qty = Number(r[CONTRACT_COLUMNS.qty]) || 0;
+    const value = units ? qty : qty * unitPrice(r, basis);
 
     const code = r[CONTRACT_COLUMNS.code];
     let entry = map.get(code);

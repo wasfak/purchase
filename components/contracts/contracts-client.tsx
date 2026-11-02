@@ -54,7 +54,11 @@ import {
 } from "@/lib/server-contracts-store";
 import { migrateContractsToServer } from "@/lib/migrate-to-server";
 import { downloadJson } from "@/lib/backup";
-import { YasmenView } from "@/components/contracts/yasmen-view";
+import {
+  useYasmen,
+  YasmenPicker,
+  YasmenSheet,
+} from "@/components/contracts/yasmen-view";
 import { MarginView } from "@/components/contracts/margin-view";
 import { ContractsDashboard } from "@/components/contracts/contracts-dashboard";
 import { InvoicesView } from "@/components/contracts/invoices-view";
@@ -155,17 +159,29 @@ const NO_NUMERIC = new Set<string>();
 // while staying real numbers so DataTable keeps formatting and sorting them.
 const CURRENCY = "EGP";
 
-const Q_TABLE_LABELS = QUARTER_LABELS.map((q) => `${q} (${CURRENCY})`);
-const TOTAL_TABLE_LABEL = `${QUARTER_TOTAL_LABEL} (${CURRENCY})`;
-const QUARTERLY_TABLE_COLUMNS = [
-  CONTRACT_COLUMNS.code,
-  CONTRACT_COLUMNS.product,
-  ...Q_TABLE_LABELS,
-  TOTAL_TABLE_LABEL,
-];
-const QUARTERLY_NUMERIC = new Set<string>([...Q_TABLE_LABELS, TOTAL_TABLE_LABEL]);
+const UNITS = "units";
 
-type View = "lines" | "quarters" | "invoices" | "yasmen" | "margin";
+// Quarterly table headers for a unit of measure (currency or units).
+const quarterlyTable = (unit: string) => {
+  const quarters = QUARTER_LABELS.map((q) => `${q} (${unit})`);
+  const total = `${QUARTER_TOTAL_LABEL} (${unit})`;
+  return {
+    unit,
+    quarters,
+    total,
+    columns: [
+      CONTRACT_COLUMNS.code,
+      CONTRACT_COLUMNS.product,
+      ...quarters,
+      total,
+    ],
+    numeric: new Set<string>([...quarters, total]),
+  };
+};
+const VALUE_TABLE = quarterlyTable(CURRENCY);
+const UNITS_TABLE = quarterlyTable(UNITS);
+
+type View = "lines" | "quarters" | "invoices" | "margin";
 
 // Multi-select supplier filter (chips). Deselecting a supplier drops it from
 // the aggregates below — same interaction as the Quarterly tab.
@@ -572,6 +588,9 @@ export function ContractsClient() {
   const [priceBasis, setPriceBasis] = React.useState<PriceBasis>("incTax");
   // Show تشغيلات (code variants of one product) as one row.
   const [linkRuns, setLinkRuns] = React.useState(false);
+  // Show the quarterly table in units instead of value. Target, slabs and
+  // charts stay in value.
+  const [showUnits, setShowUnits] = React.useState(false);
   const [invoiceDates, setInvoiceDates] = React.useState<
     Record<string, string>
   >({});
@@ -739,6 +758,11 @@ export function ContractsClient() {
     [supplierFilteredRows, invoiceDates],
   );
 
+  // Code picker + value sheet. Its picked codes and quarter scope the target,
+  // slabs, table and charts below.
+  const yasmen = useYasmen(datedRows);
+  const scopedRows = yasmen.scopedRows;
+
   const toggleSupplier = (name: string) =>
     setExcludedSuppliers((prev) => {
       const next = new Set(prev);
@@ -750,8 +774,8 @@ export function ContractsClient() {
   // Per-code buy totals split by quarter, bonus lines (أساسي = 100%) removed,
   // limited to the suppliers the user kept selected.
   const quarterly = React.useMemo(
-    () => computeQuarterlyTotals(datedRows, priceBasis),
-    [datedRows, priceBasis],
+    () => computeQuarterlyTotals(scopedRows, priceBasis),
+    [scopedRows, priceBasis],
   );
 
   // Grand total per quarter (sum across all codes the user kept), for the bar
@@ -776,11 +800,11 @@ export function ContractsClient() {
   const activeRows = React.useMemo(
     () =>
       excludedCodes.size === 0
-        ? datedRows
-        : datedRows.filter(
+        ? scopedRows
+        : scopedRows.filter(
             (r) => !excludedCodes.has(r[CONTRACT_COLUMNS.code]),
           ),
-    [datedRows, excludedCodes],
+    [scopedRows, excludedCodes],
   );
   const insights = React.useMemo(
     () => computeInsights(activeRows, priceBasis),
@@ -789,10 +813,13 @@ export function ContractsClient() {
 
   // Table rows: per code, or one per product with its تشغيلات linked (codes
   // joined by "|", which is also the row id the Ignore toggle works on).
-  const tableTotals = React.useMemo(
-    () => (linkRuns ? linkRunTotals(quarterly.totals) : quarterly.totals),
-    [quarterly, linkRuns],
-  );
+  const tableTotals = React.useMemo(() => {
+    const totals = showUnits
+      ? computeQuarterlyTotals(scopedRows, priceBasis, true).totals
+      : quarterly.totals;
+    return linkRuns ? linkRunTotals(totals) : totals;
+  }, [quarterly, scopedRows, priceBasis, showUnits, linkRuns]);
+  const table = showUnits ? UNITS_TABLE : VALUE_TABLE;
   const rowIgnored = (id: string) =>
     id.split("|").every((c) => excludedCodes.has(c));
   const toggleRowIgnored = (id: string) =>
@@ -813,13 +840,13 @@ export function ContractsClient() {
         __id: t.code,
         [CONTRACT_COLUMNS.code]: t.code.split("|").join(" · "),
         [CONTRACT_COLUMNS.product]: t.product,
-        [Q_TABLE_LABELS[0]]: t.quarters[0],
-        [Q_TABLE_LABELS[1]]: t.quarters[1],
-        [Q_TABLE_LABELS[2]]: t.quarters[2],
-        [Q_TABLE_LABELS[3]]: t.quarters[3],
-        [TOTAL_TABLE_LABEL]: t.total,
+        [table.quarters[0]]: t.quarters[0],
+        [table.quarters[1]]: t.quarters[1],
+        [table.quarters[2]]: t.quarters[2],
+        [table.quarters[3]]: t.quarters[3],
+        [table.total]: t.total,
       })),
-    [tableTotals],
+    [tableTotals, table],
   );
 
   // Export the quarterly buy totals (one row per code) to an .xlsx. Codes the
@@ -837,13 +864,13 @@ export function ContractsClient() {
         [QUARTER_LABELS[1]]: t.quarters[1],
         [QUARTER_LABELS[2]]: t.quarters[2],
         [QUARTER_LABELS[3]]: t.quarters[3],
-        [`${QUARTER_TOTAL_LABEL} (${CURRENCY})`]: t.total,
+        [table.total]: t.total,
         مستبعد: rowIgnored(t.code) ? "نعم" : "",
       }));
       await downloadSheet(
         data,
         "Quarterly",
-        `contracts-quarterly-${safeFileStem(name)}.xlsx`,
+        `contracts-quarterly-${safeFileStem(name)}${showUnits ? "-units" : ""}.xlsx`,
       );
     } catch {
       toast.error("تعذّر تصدير الملف");
@@ -973,6 +1000,14 @@ export function ContractsClient() {
       const rows: Cell[][] = companyRows.map((r) =>
         CONTRACT_COLUMN_ORDER.map((c) => r[c] ?? ""),
       );
+      // The dashboard figure covers the whole contract: the picked codes and
+      // quarter only scope what's on screen, and aren't saved with it.
+      const wholeRows = datedRows.filter(
+        (r) => !excludedCodes.has(r[CONTRACT_COLUMNS.code]),
+      );
+      const wholeTotal = computeQuarterlyTotals(wholeRows, priceBasis).totals
+        .flatMap((t) => t.quarters)
+        .reduce((a, b) => a + b, 0);
       const id = await saveContract({
         id: currentId && currentMine ? currentId : undefined,
         name,
@@ -983,8 +1018,8 @@ export function ContractsClient() {
         columns: CONTRACT_COLUMN_ORDER,
         rows,
         settings,
-        achieved,
-        dataThrough: insights.lastDate,
+        achieved: Math.round(wholeTotal * 100) / 100,
+        dataThrough: computeInsights(wholeRows, priceBasis).lastDate,
       });
       setCurrentId(id);
       setBaseline(snap);
@@ -1390,7 +1425,6 @@ export function ContractsClient() {
                 ["invoices", "تعديل كورترات"],
                 // ["lines", "Purchase lines"], — hidden for now
                 // ["margin", "Best supplier"], — hidden for now
-                ["yasmen", "Yasmen mode"],
               ] as [View, string][]
             ).map(([v, label]) => (
               <button
@@ -1506,9 +1540,49 @@ export function ContractsClient() {
                       with the contract.
                     </span>
                   </div>
+
+                  <YasmenPicker yasmen={yasmen} />
+
+                  {/* Quarterly table: value (as measured above) or units. */}
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3">
+                    <span className="text-sm font-semibold">Show table in</span>
+                    <div className="inline-flex rounded-lg border border-border bg-secondary p-0.5 text-sm">
+                      {(
+                        [
+                          [false, `Value (${CURRENCY})`],
+                          [true, "Units"],
+                        ] as [boolean, string][]
+                      ).map(([v, label]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => setShowUnits(v)}
+                          aria-pressed={showUnits === v}
+                          className={cn(
+                            "rounded-md px-3 py-1.5 font-medium transition-colors",
+                            showUnits === v
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      Target, slabs and charts stay in {CURRENCY}.
+                    </span>
+                  </div>
+
                   <p className="text-sm text-muted-foreground">
-                    Buy value = كمية الوارد × {PRICE_BASIS_LABEL[priceBasis]},
-                    per calendar quarter.{" "}
+                    {showUnits ? (
+                      <>Units = كمية الوارد, per calendar quarter. </>
+                    ) : (
+                      <>
+                        Buy value = كمية الوارد ×{" "}
+                        {PRICE_BASIS_LABEL[priceBasis]}, per calendar quarter.{" "}
+                      </>
+                    )}
                     {quarterly.totals.length.toLocaleString()} items ·{" "}
                     {quarterly.bonusExcluded.toLocaleString()} bonus line
                     {quarterly.bonusExcluded === 1 ? "" : "s"} (أساسي = 100%)
@@ -1547,10 +1621,10 @@ export function ContractsClient() {
                   />
 
                   <DataTable
-                    key={`q-${currentId ?? "live"}`}
-                    columns={QUARTERLY_TABLE_COLUMNS}
+                    key={`q-${currentId ?? "live"}-${table.unit}`}
+                    columns={table.columns}
                     rows={quarterlyRows}
-                    numericColumns={QUARTERLY_NUMERIC}
+                    numericColumns={table.numeric}
                     ignorable={{
                       isIgnored: rowIgnored,
                       onToggle: toggleRowIgnored,
@@ -1611,6 +1685,10 @@ export function ContractsClient() {
                     }
                   />
 
+                  {/* Distributor value sheet — same suppliers and invoice
+                      moves as the quarterly totals above. */}
+                  <YasmenSheet yasmen={yasmen} />
+
                   <ContractBreakdown
                     insights={insights}
                     linkRuns={linkRuns}
@@ -1640,7 +1718,7 @@ export function ContractsClient() {
                 />
               }
             />
-          ) : view === "margin" ? (
+          ) : (
             <MarginView
               rows={supplierFilteredRows}
               onClear={clearAll}
@@ -1654,8 +1732,6 @@ export function ContractsClient() {
                 />
               }
             />
-          ) : (
-            <YasmenView rows={companyRows} />
           )}
         </>
       )}

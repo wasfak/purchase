@@ -33,10 +33,21 @@ const money = (v: number) =>
 const qtyFmt = (v: number) =>
   v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-// The image-shaped distributor value sheet. The user multi-clicks the codes to
-// include, fills a quantity per distributor, and the sheet totals each item's
-// quantity, multiplies by سعر الصيدلي, and grand-totals the value.
-export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
+type Quarter = "all" | 0 | 1 | 2 | 3;
+
+// Whether a line falls in the calendar quarter (from تاريخ الحركة's month).
+const inQuarter = (r: PurchaseRow, quarter: Quarter) => {
+  if (quarter === "all") return true;
+  const dm = /\d{4}\/(\d{2})\/\d{2}/.exec(r[CONTRACT_COLUMNS.date] ?? "");
+  return dm !== null && Math.ceil(Number(dm[1]) / 3) - 1 === quarter;
+};
+
+// State behind the code picker and the image-shaped distributor value sheet.
+// The user multi-clicks the codes to include, fills a quantity per distributor,
+// and the sheet totals each item's quantity, multiplies by سعر الصيدلي, and
+// grand-totals the value. `scopedRows` hands the same picks to the rest of the
+// Contracts page.
+export function useYasmen(rows: PurchaseRow[]) {
   // One catalog entry per code, with a representative سعر الصيدلي taken from the
   // item's سعر الوحدة شامل الضريبة (last priced line seen wins). The report's
   // price already has the إضافي (extra) and خاص (special) discounts deducted,
@@ -74,7 +85,7 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
 
   // Which calendar quarter to sum (from تاريخ الحركة's month); "all" = whole
   // period. Lets the user tell Q1 buys apart from Q2, etc.
-  const [quarter, setQuarter] = React.useState<"all" | 0 | 1 | 2 | 3>("all");
+  const [quarter, setQuarter] = React.useState<Quarter>("all");
 
   // Received quantity (كمية الوارد) per code, per supplier — summed across the
   // item's purchase lines that fall in the selected quarter. Used to pre-fill
@@ -88,11 +99,7 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
       // Ignore bonus/free lines (بونص — أساسي = 100%) so their quantity doesn't
       // inflate the summed كمية الوارد.
       if (num(r[CONTRACT_COLUMNS.basic]) === 100) continue;
-      if (quarter !== "all") {
-        const dm = /\d{4}\/(\d{2})\/\d{2}/.exec(r[CONTRACT_COLUMNS.date] ?? "");
-        if (!dm) continue;
-        if (Math.ceil(Number(dm[1]) / 3) - 1 !== quarter) continue;
-      }
+      if (!inQuarter(r, quarter)) continue;
       let bySupplier = map.get(code);
       if (!bySupplier) {
         bySupplier = new Map();
@@ -106,38 +113,18 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
     return map;
   }, [rows, quarter]);
 
-  // Every distinct supplier (اسم المورد) found in the loaded data.
-  const allSuppliers = React.useMemo<string[]>(() => {
+  // Distributor columns = every supplier in the rows, which the Contracts page
+  // has already filtered (id = name so cell data stays stable when it changes).
+  const columns = React.useMemo<Column[]>(() => {
     const set = new Set<string>();
     for (const r of rows) {
       const s = (r[CONTRACT_COLUMNS.supplier] ?? "").trim();
       if (s) set.add(s);
     }
-    return [...set].sort((a, b) => a.localeCompare(b, "ar"));
+    return [...set]
+      .sort((a, b) => a.localeCompare(b, "ar"))
+      .map((name) => ({ id: name, name }));
   }, [rows]);
-
-  // Suppliers the user toggled off — their column is dropped from the sheet.
-  const [excludedSuppliers, setExcludedSuppliers] = React.useState<Set<string>>(
-    new Set(),
-  );
-
-  // Distributor columns = the kept suppliers (id = name so cell data stays
-  // stable when the filter changes).
-  const columns = React.useMemo<Column[]>(
-    () =>
-      allSuppliers
-        .filter((name) => !excludedSuppliers.has(name))
-        .map((name) => ({ id: name, name })),
-    [allSuppliers, excludedSuppliers],
-  );
-
-  const toggleSupplier = (name: string) =>
-    setExcludedSuppliers((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
 
   // The persistent master set of chosen codes (ordered) — the single source of
   // truth. Every pick is saved immediately (see updateSaved) and re-applied to
@@ -152,7 +139,6 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
   const [priceOverride, setPriceOverride] = React.useState<
     Record<string, string>
   >({});
-  const [query, setQuery] = React.useState("");
 
   // Load the saved preset once on mount.
   React.useEffect(() => {
@@ -176,6 +162,16 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
     () => savedCodes.filter((c) => catalogCodes.has(c)),
     [savedCodes, catalogCodes],
   );
+
+  // Lines for the picked codes in the picked quarter. No picks = every code.
+  const scopedRows = React.useMemo(() => {
+    const picked = new Set(selected);
+    return rows.filter(
+      (r) =>
+        (picked.size === 0 || picked.has(r[CONTRACT_COLUMNS.code])) &&
+        inQuarter(r, quarter),
+    );
+  }, [rows, selected, quarter]);
 
   // Mirror the master set to localStorage on every change — this is the "smart
   // save": picks persist instantly and survive uploads/reloads.
@@ -319,6 +315,49 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
     }
   };
 
+  return {
+    catalog,
+    infoByCode,
+    quarter,
+    setQuarter,
+    columns,
+    savedCodes,
+    selected,
+    scopedRows,
+    priceOverride,
+    setPriceOverride,
+    clearPreset,
+    toggleCode,
+    selectAllShown,
+    clearShown,
+    loadFromUpload,
+    setCell,
+    cellValue,
+    qtyOf,
+    valueOf,
+    grandTotal,
+    exportExcel,
+  };
+}
+
+type Yasmen = ReturnType<typeof useYasmen>;
+
+// Quarter selector, one-tap regenerate and the code picker.
+export function YasmenPicker({ yasmen }: { yasmen: Yasmen }) {
+  const {
+    catalog,
+    quarter,
+    setQuarter,
+    savedCodes,
+    selected,
+    clearPreset,
+    toggleCode,
+    selectAllShown,
+    clearShown,
+    loadFromUpload,
+  } = yasmen;
+  const [query, setQuery] = React.useState("");
+
   const needle = query.trim().toLowerCase();
   const shown = needle
     ? catalog.filter(
@@ -329,57 +368,6 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
 
   return (
     <div className="space-y-4">
-      {/* Supplier toggles: turn a supplier off to drop its column. */}
-      {allSuppliers.length > 0 && (
-        <div className="rounded-xl border border-border bg-card p-3">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm font-semibold">
-              الموزّعون ({allSuppliers.length - excludedSuppliers.size} من{" "}
-              {allSuppliers.length})
-            </div>
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setExcludedSuppliers(new Set())}
-                disabled={excludedSuppliers.size === 0}
-              >
-                تحديد الكل
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setExcludedSuppliers(new Set(allSuppliers))}
-                disabled={excludedSuppliers.size === allSuppliers.length}
-              >
-                مسح
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2" dir="rtl">
-            {allSuppliers.map((name) => {
-              const excluded = excludedSuppliers.has(name);
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => toggleSupplier(name)}
-                  aria-pressed={!excluded}
-                  className={cn(
-                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                    excluded
-                      ? "border-border text-muted-foreground line-through opacity-60 hover:opacity-100"
-                      : "border-primary/40 bg-primary/10 text-foreground hover:bg-primary/20",
-                  )}
-                >
-                  {name}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Quarter selector — the distributor cells pre-fill from this quarter's
           received quantities (or the whole period). */}
       <div className="flex flex-wrap items-center gap-2">
@@ -394,7 +382,7 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
               [1, "Q2"],
               [2, "Q3"],
               [3, "Q4"],
-            ] as ["all" | 0 | 1 | 2 | 3, string][]
+            ] as [Quarter, string][]
           ).map(([v, label]) => (
             <button
               key={label}
@@ -519,8 +507,32 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
 
-      {/* The value sheet appears once at least one code is picked. */}
+// The value sheet appears once at least one code is picked.
+export function YasmenSheet({ yasmen }: { yasmen: Yasmen }) {
+  const {
+    infoByCode,
+    columns,
+    selected,
+    priceOverride,
+    setPriceOverride,
+    setCell,
+    cellValue,
+    qtyOf,
+    valueOf,
+    grandTotal,
+    exportExcel,
+  } = yasmen;
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold" dir="rtl">
+        جدول المسحوبات
+      </h2>
+
       {selected.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border bg-muted/40 px-4 py-8 text-center text-sm text-muted-foreground">
           اختر صنفاً أو أكثر من القائمة أعلاه ليظهر جدول المسحوبات.
@@ -541,27 +553,27 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
             >
               <thead className="sticky top-0 z-10">
                 <tr className="bg-primary/10 text-center">
-                  <th className="w-[6rem] whitespace-nowrap px-2 py-2 font-semibold">
+                  <th className="w-[5rem] whitespace-nowrap px-2 py-2 font-semibold">
                     الكود
                   </th>
-                  <th className="min-w-[16rem] whitespace-nowrap px-3 py-2 text-start font-semibold">
+                  <th className="min-w-[14rem] whitespace-nowrap px-3 py-2 text-start font-semibold">
                     الصنف
                   </th>
                   {columns.map((col) => (
                     <th
                       key={col.id}
-                      className="whitespace-nowrap px-2 py-2 text-xs font-semibold text-muted-foreground"
+                      className="min-w-[5rem] px-1.5 py-2 text-xs font-semibold leading-tight text-muted-foreground"
                     >
                       <span dir="auto">{col.name}</span>
                     </th>
                   ))}
-                  <th className="w-[7rem] whitespace-nowrap px-2 py-2 font-semibold">
+                  <th className="w-[5rem] px-2 py-2 font-semibold leading-tight">
                     اجمالي الكمية
                   </th>
-                  <th className="w-[7rem] whitespace-nowrap px-2 py-2 font-semibold">
+                  <th className="w-[5rem] px-2 py-2 font-semibold leading-tight">
                     سعر الصيدلي
                   </th>
-                  <th className="w-[9rem] whitespace-nowrap px-2 py-2 font-semibold">
+                  <th className="w-[7rem] px-2 py-2 font-semibold leading-tight">
                     اجمالي القيمة
                   </th>
                 </tr>
@@ -587,20 +599,20 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
                             onChange={(e) =>
                               setCell(code, col.id, e.target.value)
                             }
-                            className="h-8 w-24 min-w-full border-0 bg-transparent px-2 text-center text-sm tabular-nums outline-none focus:bg-primary/5 focus:ring-2 focus:ring-inset focus:ring-ring"
+                            className="h-8 w-full min-w-[4rem] border-0 bg-transparent px-2 text-center text-sm tabular-nums outline-none focus:bg-primary/5 focus:ring-2 focus:ring-inset focus:ring-ring"
                           />
                         </td>
                       ))}
-                      <td className="w-[7rem] px-2 py-1 text-center font-semibold tabular-nums">
+                      <td className="px-2 py-1 text-center font-semibold tabular-nums">
                         {qtyFmt(qty)}
                       </td>
-                      <td className="w-[7rem] p-0 align-middle">
+                      <td className="p-0 align-middle">
                         <input
                           value={
                             priceStr !== undefined
                               ? priceStr
                               : info
-                                ? String(info.price)
+                                ? String(Number(info.price.toFixed(2)))
                                 : ""
                           }
                           inputMode="decimal"
@@ -611,10 +623,10 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
                             }))
                           }
                           title="سعر الوحدة شامل الضريبة — قابل للتعديل"
-                          className="h-8 w-24 min-w-full border-0 bg-transparent px-2 text-center text-sm tabular-nums outline-none focus:bg-primary/5 focus:ring-2 focus:ring-inset focus:ring-ring"
+                          className="h-8 w-full min-w-[4rem] border-0 bg-transparent px-2 text-center text-sm tabular-nums outline-none focus:bg-primary/5 focus:ring-2 focus:ring-inset focus:ring-ring"
                         />
                       </td>
-                      <td className="w-[9rem] px-2 py-1 text-center font-semibold tabular-nums">
+                      <td className="whitespace-nowrap px-2 py-1 text-center font-semibold tabular-nums">
                         {money(valueOf(code))}
                       </td>
                     </tr>
@@ -629,7 +641,7 @@ export function YasmenView({ rows }: { rows: PurchaseRow[] }) {
                   >
                     اجمالي قيمة المسحوبات من الاصناف
                   </td>
-                  <td className="w-[9rem] px-2 py-2 text-center tabular-nums text-primary">
+                  <td className="whitespace-nowrap px-2 py-2 text-center tabular-nums text-primary">
                     {money(grandTotal)}
                   </td>
                 </tr>
