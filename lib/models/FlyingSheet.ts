@@ -38,7 +38,7 @@ const FlyingRowSchema = new Schema(
   { _id: false },
 );
 
-const FlyingSheetSchema = new Schema(
+export const FlyingSheetSchema = new Schema(
   {
     ownerId: { type: String, required: true, index: true },
     month: { type: String, required: true, index: true },

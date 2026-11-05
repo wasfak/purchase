@@ -1,4 +1,4 @@
-import { KhosomatBoard } from "@/components/khosomat/khosomat-board";
+import { KhosomatTabs } from "@/components/khosomat/khosomat-tabs";
 import { requireFullAccess } from "@/lib/access";
 
 export default async function Page() {
@@ -16,7 +16,7 @@ export default async function Page() {
           and the stock file saved on this PC.
         </p>
       </div>
-      <KhosomatBoard />
+      <KhosomatTabs />
     </main>
   );
 }

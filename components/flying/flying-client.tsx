@@ -12,6 +12,7 @@ import {
   Upload,
   X,
   Plane,
+  Truck,
   Filter,
   StickyNote,
   Download,
@@ -359,7 +360,14 @@ function EditableCell({
   );
 }
 
-export function FlyingClient() {
+export function FlyingClient({
+  kind = "flying",
+}: {
+  // "short" = the تصفية لم يصل sheet: its rows are sent over from Auto Tasfya, so
+  // there is no htm import, and it adds وصل / لم يصل chips for tracking arrivals.
+  kind?: "flying" | "short";
+}) {
+  const isShort = kind === "short";
   const params = useSearchParams();
   const month = params.get("month") ?? "";
   const company = (params.get("company") ?? "").trim();
@@ -376,6 +384,7 @@ export function FlyingClient() {
   const [rows, setRows] = React.useState<Row[]>([]);
   const [filters, setFilters] = React.useState<Record<string, Set<string>>>({});
   const [negativeOnly, setNegativeOnly] = React.useState(false);
+  const [coveredOnly, setCoveredOnly] = React.useState(false);
 
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -391,7 +400,7 @@ export function FlyingClient() {
     (async () => {
       try {
         const res = await fetch(
-          `/api/flying?month=${encodeURIComponent(month)}&company=${encodeURIComponent(company)}`,
+          `/api/flying?month=${encodeURIComponent(month)}&company=${encodeURIComponent(company)}${isShort ? "&kind=short" : ""}`,
         );
         if (!res.ok) throw new Error();
         const data = await res.json();
@@ -431,7 +440,7 @@ export function FlyingClient() {
     return () => {
       active = false;
     };
-  }, [month, company, monthValid]);
+  }, [month, company, monthValid, isShort]);
 
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -501,7 +510,7 @@ export function FlyingClient() {
   // sheet has loaded.
   const pendingHandled = React.useRef(false);
   React.useEffect(() => {
-    if (loading || pendingHandled.current) return;
+    if (isShort || loading || pendingHandled.current) return;
     pendingHandled.current = true;
     let text: string | null = null;
     try {
@@ -602,6 +611,7 @@ export function FlyingClient() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          kind,
           month,
           company,
           supplier,
@@ -613,7 +623,7 @@ export function FlyingClient() {
       });
       if (!res.ok) throw new Error();
       setDirty(false);
-      toast.success("Flying sheet saved");
+      toast.success(isShort ? "Sheet saved" : "Flying sheet saved");
     } catch {
       toast.error("Couldn't save the sheet");
     } finally {
@@ -676,12 +686,26 @@ export function FlyingClient() {
         .filter(
           ({ row }) =>
             passes(row) &&
-            (!negativeOnly || effRemaining(row, columns) < 0),
+            (!negativeOnly || effRemaining(row, columns) < 0) &&
+            (!coveredOnly || effRemaining(row, columns) >= 0),
         ),
-    [rows, passes, negativeOnly, columns],
+    [rows, passes, negativeOnly, coveredOnly, columns],
   );
 
-  const anyFilter = Object.keys(filters).length > 0 || negativeOnly;
+  const anyFilter =
+    Object.keys(filters).length > 0 || negativeOnly || coveredOnly;
+
+  // وصل / لم يصل counts for the short sheet's chips — over the filtered rows,
+  // ignoring the chips themselves so both counts stay visible.
+  const arrivalCounts = React.useMemo(() => {
+    const c = { arrived: 0, short: 0 };
+    for (const row of rows) {
+      if (!passes(row)) continue;
+      if (effRemaining(row, columns) < 0) c.short++;
+      else c.arrived++;
+    }
+    return c;
+  }, [rows, passes, columns]);
 
   // Suppliers = the named distributor columns; shown as chips you tick off to
   // remember which distributor you've already sent this order to.
@@ -715,7 +739,7 @@ export function FlyingClient() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "الباقى");
       const safe = `${company}-${month}`.replace(/[^\w.-]+/g, "_");
-      XLSX.writeFile(wb, `flying-${safe}.xlsx`);
+      XLSX.writeFile(wb, `${isShort ? "short" : "flying"}-${safe}.xlsx`);
     } catch {
       toast.error("Couldn't export the sheet.");
     }
@@ -762,8 +786,12 @@ export function FlyingClient() {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <Plane className="size-6 text-primary" />
-            Flying tasfya
+            {isShort ? (
+              <Truck className="size-6 text-primary" />
+            ) : (
+              <Plane className="size-6 text-primary" />
+            )}
+            {isShort ? "تصفية لم يصل" : "Flying tasfya"}
           </h1>
           <p className="text-sm text-muted-foreground">
             <span dir="auto" className="font-medium text-foreground">
@@ -776,22 +804,26 @@ export function FlyingClient() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={importing}
-            onClick={() => fileRef.current?.click()}
-          >
-            {importing ? <Loader2 className="animate-spin" /> : <Upload />}
-            {rows.length > 0 ? "Re-import htm" : "Import htm"}
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".htm,.html"
-            className="hidden"
-            onChange={onPickFile}
-          />
+          {!isShort && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={importing}
+                onClick={() => fileRef.current?.click()}
+              >
+                {importing ? <Loader2 className="animate-spin" /> : <Upload />}
+                {rows.length > 0 ? "Re-import htm" : "Import htm"}
+              </Button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".htm,.html"
+                className="hidden"
+                onChange={onPickFile}
+              />
+            </>
+          )}
           <Button type="button" onClick={save} disabled={saving || !dirty}>
             {saving ? <Loader2 className="animate-spin" /> : <Save />}
             {saving ? "Saving…" : dirty ? "Save" : "Saved"}
@@ -799,7 +831,12 @@ export function FlyingClient() {
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && isShort ? (
+        <div className="rounded-xl border border-dashed border-border bg-card/50 p-10 text-center text-sm text-muted-foreground">
+          No items on this sheet yet. Open it from the Auto Tasfya page with the
+          لم يصل items showing.
+        </div>
+      ) : rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-card/50 p-10 text-center">
           <p className="text-sm text-muted-foreground">
             Import the supply-order <code>.htm</code> for this order to build the
@@ -838,21 +875,57 @@ export function FlyingClient() {
                 onClick={() => {
                   setFilters({});
                   setNegativeOnly(false);
+                  setCoveredOnly(false);
                 }}
               >
                 <X className="size-4" /> Clear filters
               </Button>
             )}
-            <Button
-              type="button"
-              variant={negativeOnly ? "default" : "outline"}
-              size="sm"
-              className="ml-auto"
-              onClick={() => setNegativeOnly((v) => !v)}
-              title="Show only items whose الباقى is negative (still short)"
-            >
-              <ArrowDownWideNarrow className="size-4" /> Negative only
-            </Button>
+            {isShort ? (
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-pressed={coveredOnly}
+                  onClick={() => {
+                    setCoveredOnly((v) => !v);
+                    setNegativeOnly(false);
+                  }}
+                  title="الأصناف التي وصلت بالكامل (الباقى 0 أو أكثر)"
+                  className={cn(
+                    "rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-medium text-emerald-700 ring-emerald-500 dark:text-emerald-400",
+                    coveredOnly && "ring-2 ring-offset-1 ring-offset-background",
+                  )}
+                >
+                  وصل {arrivalCounts.arrived}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={negativeOnly}
+                  onClick={() => {
+                    setNegativeOnly((v) => !v);
+                    setCoveredOnly(false);
+                  }}
+                  title="الأصناف التي لم تصل بالكامل (الباقى سالب)"
+                  className={cn(
+                    "rounded-full bg-red-500/15 px-3 py-1 text-sm font-medium text-red-700 ring-red-500 dark:text-red-400",
+                    negativeOnly && "ring-2 ring-offset-1 ring-offset-background",
+                  )}
+                >
+                  لم يصل {arrivalCounts.short}
+                </button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant={negativeOnly ? "default" : "outline"}
+                size="sm"
+                className="ml-auto"
+                onClick={() => setNegativeOnly((v) => !v)}
+                title="Show only items whose الباقى is negative (still short)"
+              >
+                <ArrowDownWideNarrow className="size-4" /> Negative only
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"

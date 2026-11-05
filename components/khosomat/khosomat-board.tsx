@@ -19,6 +19,13 @@ import { Button } from "@/components/ui/button";
 import { monthLabel } from "@/lib/dates";
 import { normalizeCompany } from "@/lib/expiry";
 import { productKey } from "@/lib/tasfya/productKey";
+import {
+  compare,
+  DISCOUNT_MARGIN,
+  mode,
+  round2,
+  type Status,
+} from "@/lib/tasfya/itemHistory";
 import { bonusPercent } from "@/lib/tasfya/report";
 import { loadStock } from "@/lib/tasfya/stockCache";
 import type { PurchaseLine, StockItem } from "@/lib/tasfya/types";
@@ -28,8 +35,6 @@ type MonthData = {
   orders: { supplier: string; items: { code: string; name: string }[] }[];
   lines: PurchaseLine[];
 };
-
-type Status = "first" | "same" | "lower" | "higher";
 
 // One purchase of one product on one invoice: all its lines (paid + بونص)
 // rolled together. أساسي / إضافي / خاص are each kept (and compared) on their
@@ -76,7 +81,6 @@ function loadHidden(): Set<string> {
   }
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
 const fmtPct = (n: number | null) =>
   n === null ? "—" : `${round2(n).toLocaleString("en-US")}%`;
 const isIssue = (p: Purchase) =>
@@ -91,32 +95,6 @@ const DISCOUNTS = [
   { label: "إضافي", value: "extra", usual: "usualExtra", status: "extraStatus" },
   { label: "خاص", value: "special", usual: "usualSpecial", status: "specialStatus" },
 ] as const;
-
-// Most common value; ties go to the most recent of the tied values (the
-// purchases are passed newest first).
-function mode(values: number[]): number {
-  const counts = new Map<number, number>();
-  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
-  let best = values[0];
-  let bestCount = 0;
-  for (const v of values) {
-    const c = counts.get(v) ?? 0;
-    if (c > bestCount) {
-      best = v;
-      bestCount = c;
-    }
-  }
-  return best;
-}
-
-// Discount differences within ±1.5% of the usual count as the same.
-const DISCOUNT_MARGIN = 1.5;
-
-function compare(value: number, usual: number | null, margin = 0): Status {
-  if (usual === null) return "first";
-  if (Math.abs(value - usual) <= margin + 0.005) return "same";
-  return value < usual ? "lower" : "higher";
-}
 
 // Ties each month's buy lines to the important companies and rolls them into
 // purchases. A line belongs to a company when its code is one of the company's

@@ -818,6 +818,37 @@ export function RunClient({
     }
   };
 
+  // Send the visible لم يصل rows to this company's saved تصفية لم يصل sheet (new
+  // codes only; existing ones keep what was recorded) and open it in a new tab.
+  // The tab is opened before the await so the popup blocker allows it.
+  const openShortSheet = async () => {
+    const tab = window.open("", "_blank");
+    try {
+      const res = await fetch("/api/flying", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          month,
+          company,
+          referenceDate: meta?.referenceDate ?? "",
+          orderNumber: meta?.orderNumbers.join(", ") ?? "",
+          items: visibleShort.map((r) => ({
+            code: r.code,
+            name: r.name,
+            order: -r.tasfya,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error();
+      const url = `/auto-tasfya/short?month=${encodeURIComponent(month)}&company=${encodeURIComponent(company)}`;
+      if (tab) tab.location.assign(url);
+      else window.location.assign(url);
+    } catch {
+      tab?.close();
+      toast.error("تعذّر فتح تصفية لم يصل.");
+    }
+  };
+
   const save = async () => {
     if (!result) return;
     setSaving(true);
@@ -849,6 +880,7 @@ export function RunClient({
     }
   };
 
+  const visibleShort = visibleRows.filter((r) => r.tasfya < 0);
   const hasStock = stockCount !== null;
   // Embedded in the batch page (which is already the page's <main>).
   const Wrapper = embedded ? "section" : "main";
@@ -1033,6 +1065,15 @@ export function RunClient({
               variant="outline"
               size="sm"
               className="ms-auto"
+              onClick={openShortSheet}
+              title="فتح صفحة محفوظة لمتابعة أصناف لم يصل الظاهرة — ما وصل وما لم يصل"
+            >
+              <Truck className="size-4" /> تصفية لم يصل {visibleShort.length}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               onClick={exportExcel}
               title="تصدير الصفوف الظاهرة إلى Excel (كود، اسم الصنف، التسوية)"
             >
