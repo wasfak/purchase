@@ -8,6 +8,7 @@ import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import {
+  canUseInspire,
   canViewDashboard,
   hasFullAccess,
   isOrdersReviewOnly,
@@ -49,6 +50,8 @@ export default async function RootLayout({
   const fullAccess = await hasFullAccess();
   const showDashboard = fullAccess && (await canViewDashboard());
   const ordersReviewOnly = !fullAccess && (await isOrdersReviewOnly());
+  // Limited users on the Inspire allow-list also get the Inspire tab.
+  const inspireOnly = !fullAccess && !ordersReviewOnly && (await canUseInspire());
   const navItems: NavItem[] = ordersReviewOnly
     ? [
         {
@@ -128,6 +131,9 @@ export default async function RootLayout({
           href: "/contracts",
           icon: "contracts",
         },
+        ...(inspireOnly
+          ? [{ value: "inspire", label: "Inspire", href: "/inspire", icon: "inspire" } as NavItem]
+          : []),
         { value: "winter", label: "Winter", href: "/winter", icon: "winter" },
       ];
 

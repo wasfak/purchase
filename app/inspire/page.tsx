@@ -1,8 +1,8 @@
 import { InspireClient } from "@/components/inspire/inspire-client";
-import { requireFullAccess } from "@/lib/access";
+import { requireInspireAccess } from "@/lib/access";
 
 export default async function Page() {
-  await requireFullAccess();
+  await requireInspireAccess();
   return (
     <main className="mx-auto w-full max-w-[120rem] space-y-5 p-6 pb-32">
       <div className="border-b pb-3">

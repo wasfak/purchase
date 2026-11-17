@@ -2,7 +2,15 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { Boxes, ChevronDown, ChevronRight, FileText, Loader2, X } from "lucide-react";
+import {
+  Boxes,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  FileText,
+  Loader2,
+  X,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -89,15 +97,20 @@ function SlabBadge({ value }: { value: number }) {
 /**
  * Free-goods rules per slab, exactly as in the offer letter: a % on every
  * Inspire item, a higher % on Vonaspire, and the minimum paid quantity the
- * rate starts from ("ابتداءً من 30+1" → minimum 30).
+ * rate starts from ("ابتداءً من 30+1" → minimum 30). `steps` are the letter's
+ * explicit ratios (e.g. 30+2), which win over rounding down.
  */
+type BonusRule = { pct: number; min: number; steps?: [number, number][] };
 const SLAB_RULES: Record<
   (typeof SLABS)[number]["name"],
-  { all: { pct: number; min: number }; vona: { pct: number; min: number } }
+  { all: BonusRule; vona: BonusRule }
 > = {
   "الشريحة الأولى": { all: { pct: 3, min: 30 }, vona: { pct: 5, min: 20 } },
   "الشريحة الثانية": { all: { pct: 5, min: 20 }, vona: { pct: 7, min: 15 } },
-  "الشريحة الثالثة": { all: { pct: 6, min: 15 }, vona: { pct: 10, min: 10 } },
+  "الشريحة الثالثة": {
+    all: { pct: 6, min: 15, steps: [[30, 2], [50, 3]] },
+    vona: { pct: 10, min: 10 },
+  },
 };
 
 const isVonaspire = (product: string) =>
@@ -105,12 +118,17 @@ const isVonaspire = (product: string) =>
 
 /**
  * Bonus owed on one item of an invoice. Below the minimum quantity nothing is
- * owed; from it on, qty × % rounded to the nearest unit — which reproduces
- * every ratio in the letter (30+1, 20+1, 15+1, 10+1, 30+2, 50+3).
+ * owed; from it on, qty × % rounded DOWN (3.4 → 3, 3.7 → 3), but at least 1
+ * unit once the minimum is reached (30 × 3% = 0.9 → 1, i.e. "30+1"), and never
+ * below a ratio the letter states (30 × 6% = 1.8 → 2, i.e. "30+2").
  */
-function expectedBonus(qty: number, rule: { pct: number; min: number }): number {
+function expectedBonus(qty: number, rule: BonusRule): number {
   if (qty < rule.min) return 0;
-  return Math.round((qty * rule.pct) / 100);
+  // + 1e-9: ح.ا conversions leave float dust (2.9999999 must floor to 3).
+  let bonus = Math.max(1, Math.floor((qty * rule.pct) / 100 + 1e-9));
+  for (const [atQty, free] of rule.steps ?? [])
+    if (qty >= atQty) bonus = Math.max(bonus, free);
+  return bonus;
 }
 
 /** "2026/8/7" → "2026/08/07", so dates compare correctly as strings. */
@@ -122,13 +140,20 @@ function normDate(d: string): string {
 /** "YYYY/MM" of a normalized date. */
 const monthOf = (d: string) => d.slice(0, 7);
 
-/** The last day ("YYYY/MM/31" is fine for comparison) of the month after `d`. */
+/** The real last day ("YYYY/MM/30", "…/02/28" …) of month `ym` ("YYYY/MM"). */
+function endOfMonth(ym: string): string {
+  const y = Number(ym.slice(0, 4));
+  const m = Number(ym.slice(5, 7));
+  return `${ym}/${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+}
+
+/** The last day of the month after `d`. */
 function endOfNextMonth(d: string): string {
   const y = Number(d.slice(0, 4));
   const m = Number(d.slice(5, 7));
   const ny = m === 12 ? y + 1 : y;
   const nm = m === 12 ? 1 : m + 1;
-  return `${ny}/${String(nm).padStart(2, "0")}/31`;
+  return endOfMonth(`${ny}/${String(nm).padStart(2, "0")}`);
 }
 
 /**
@@ -162,6 +187,11 @@ const MATHIL = /مثيل[\s\S]*$/;
 /** Arabic dosage-form words some codes carry and others don't. */
 const FORM_WORDS =
   /اقراص|أقراص|قرص|مغلفة|مغلفه|مغلقة|مكسوة|مكسوه|فوارة|فوار|كبسولات|كبسول|شراب|امبولات|امبول/g;
+/**
+ * Status notes SofTech appends to a code's name, e.g. "ت.ج٢ ملغي يرد للزيادات"
+ * (cancelled, returned for increases) — the product is still the same.
+ */
+const NAME_NOTES = /ملغ[يى]|يرد\s*لل?زيادات|للزيادات|زيادات/g;
 /** Cross-reference codes left at the end ("… TAB 133994 , 133701 , 131"). */
 const TRAILING_CODES = /[\s,/-]*\d{5,}[\s\d,/-]*$/;
 /**
@@ -205,6 +235,7 @@ function groupName(product: string): string {
     .replace(DOTTED_PRICE_TAG, " ")
     .replace(PRICE_TAG, " ")
     .replace(FORM_WORDS, " ")
+    .replace(NAME_NOTES, " ")
     .replace(/#[^#]*#/g, " ")
     .replace(/\(\s*\)/g, " ")
     .replace(TRAILING_CODES, "")
@@ -298,11 +329,22 @@ type MonthTotal = {
  * per item code and allocated oldest-first to that item's months still owed
  * بونص — never to a month after the بونص itself. Anything left over is surplus.
  * Invoices are kept (paid lines only) for the per-invoice listing.
+ *
+ * `purchaseMonths` / `bonusMonths` (null = all) narrow the check: only the
+ * picked purchase months are shown and owed, and only بونص that arrived in the
+ * picked بونص months counts (e.g. buys of 05 + 06, بونص arrived in 07).
  */
-function buildMonths(rows: PurchaseRow[]): {
+function buildMonths(
+  rows: PurchaseRow[],
+  purchaseMonths: Set<string> | null = null,
+  bonusMonths: Set<string> | null = null,
+): {
   months: MonthTotal[];
   invoices: Invoice[];
   surplus: number;
+  /** Every month with paid purchases / with بونص lines, for the pickers. */
+  allPurchaseMonths: string[];
+  allBonusMonths: string[];
 } {
   type InvAcc = Invoice & { codes: Set<string> };
   const invMap = new Map<string, InvAcc>();
@@ -438,7 +480,14 @@ function buildMonths(rows: PurchaseRow[]): {
     m.paidUnits += inv.paidUnits;
     m.value += inv.value;
   }
-  const months = [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month));
+  const allMonths = [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month));
+  const allPurchaseMonths = allMonths.map((m) => m.month);
+  const months = purchaseMonths
+    ? allMonths.filter((m) => purchaseMonths.has(m.month))
+    : allMonths;
+  const allBonusMonths = [
+    ...new Set([...bonusByCode.values()].flat().map((b) => monthOf(b.date))),
+  ].sort();
   for (const m of months) {
     m.slab = slabOf(m.value).reached;
     const rules = m.slab ? SLAB_RULES[m.slab.name] : null;
@@ -484,6 +533,7 @@ function buildMonths(rows: PurchaseRow[]): {
   for (const [group, bonuses] of bonusByCode) {
     const owed = owedByCode.get(group) ?? []; // already in month order
     for (const b of [...bonuses].sort((x, y) => x.date.localeCompare(y.date))) {
+      if (bonusMonths && !bonusMonths.has(monthOf(b.date))) continue;
       let left = b.qty;
       for (const o of owed) {
         if (left <= 0) break;
@@ -499,8 +549,13 @@ function buildMonths(rows: PurchaseRow[]): {
     }
   }
 
+  // With picked بونص months the question is "did it arrive in THOSE months",
+  // so only wait while the data doesn't yet cover the last picked month.
+  const lastBonusMonth = bonusMonths ? [...bonusMonths].sort().at(-1) : undefined;
   for (const m of months) {
-    const waiting = dataEnd < endOfNextMonth(`${m.month}/01`);
+    const waiting = lastBonusMonth
+      ? dataEnd < endOfMonth(lastBonusMonth)
+      : dataEnd < endOfNextMonth(`${m.month}/01`);
     for (const item of m.items) {
       // Rounded: ح.ا conversions leave float dust (e.g. 6 − 5.999999).
       item.missing = Math.max(0, Math.round((item.expected - item.received) * 100) / 100);
@@ -513,7 +568,7 @@ function buildMonths(rows: PurchaseRow[]): {
     m.pendingMissing = m.items.reduce((s, i) => s + (i.pending ? i.missing : 0), 0);
   }
 
-  return { months, invoices, surplus };
+  return { months, invoices, surplus, allPurchaseMonths, allBonusMonths };
 }
 
 /** Status pill: did the supplier send the بونص owed? */
@@ -549,12 +604,43 @@ function BonusStatus({
   );
 }
 
+/** An item's بونص status in a month. */
+type ItemStatus = "ok" | "missing" | "pending" | "none";
+function itemStatus(it: MonthItem): ItemStatus {
+  if (it.expected === 0) return "none";
+  if (it.missing === 0) return "ok";
+  return it.pending ? "pending" : "missing";
+}
+
+/** Row colour per status: the whole row green (received) / red (not received). */
+const STATUS_ROW: Record<ItemStatus, string> = {
+  ok: "border-s-4 border-s-emerald-500 bg-emerald-500/15 hover:bg-emerald-500/20",
+  missing: "border-s-4 border-s-red-500 bg-red-500/15 hover:bg-red-500/20",
+  pending: "border-s-4 border-s-amber-500 bg-amber-500/15 hover:bg-amber-500/20",
+  none: "",
+};
+
+/** Item filters shared by every month: status + code/name search. */
+type ItemFilter = { status: ItemStatus | "all"; query: string };
+
+function matchesFilter(it: MonthItem, f: ItemFilter): boolean {
+  if (f.status !== "all" && itemStatus(it) !== f.status) return false;
+  const q = asciiDigits(f.query).trim().toLowerCase();
+  if (!q) return true;
+  return (
+    it.product.toLowerCase().includes(q) ||
+    it.allCodes.some((c) => c.code.includes(q))
+  );
+}
+
 /** The expanded detail of one month: each item's بونص owed vs received. */
 function MonthDetail({
   month,
+  filter,
   onRemove,
 }: {
   month: MonthTotal;
+  filter: ItemFilter;
   /** Drop item codes (all تشغيلات of a product) from the whole analysis. */
   onRemove: (codes: string[]) => void;
 }) {
@@ -562,6 +648,13 @@ function MonthDetail({
     return (
       <p className="bg-muted/20 px-4 py-3 text-xs text-muted-foreground" dir="rtl">
         إجمالي الشهر أقل من {money(SLABS[0].min)} — لا يوجد بونص مستحق حسب العرض.
+      </p>
+    );
+  const items = month.items.filter((it) => matchesFilter(it, filter));
+  if (items.length === 0)
+    return (
+      <p className="bg-muted/20 px-4 py-3 text-xs text-muted-foreground" dir="rtl">
+        لا توجد أصناف مطابقة للفلتر في هذا الشهر.
       </p>
     );
   return (
@@ -582,14 +675,8 @@ function MonthDetail({
             </tr>
           </thead>
           <tbody>
-            {month.items.map((it) => (
-              <tr
-                key={it.key}
-                className={cn(
-                  "border-t",
-                  it.missing > 0 && (it.pending ? "bg-amber-500/5" : "bg-red-500/5"),
-                )}
-              >
+            {items.map((it) => (
+              <tr key={it.key} className={cn("border-t", STATUS_ROW[itemStatus(it)])}>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-xs tabular-nums text-muted-foreground">
                   {it.allCodes.length > 1
                     ? it.allCodes.map((c) => (
@@ -778,6 +865,76 @@ function SupplierChips({
   );
 }
 
+/**
+ * Multi-select month chips. `picked` null = every month (nothing narrowed);
+ * clicking a month while all are on starts a selection with just that month.
+ */
+function MonthPicker({
+  title,
+  months,
+  picked,
+  onChange,
+}: {
+  title: string;
+  months: string[];
+  picked: Set<string> | null;
+  onChange: (next: Set<string> | null) => void;
+}) {
+  const toggle = (month: string) => {
+    if (!picked) return onChange(new Set([month]));
+    const next = new Set(picked);
+    if (next.has(month)) next.delete(month);
+    else next.add(month);
+    onChange(next.size === months.length ? null : next);
+  };
+  return (
+    <div className="rounded-xl border border-border bg-card p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold" dir="rtl">
+          {title} ({picked ? picked.size : "كل الشهور"})
+        </div>
+        <div className="flex gap-1">
+          <Button size="sm" variant="ghost" onClick={() => onChange(null)} disabled={!picked}>
+            اختيار الكل
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onChange(new Set())}
+            disabled={picked?.size === 0}
+          >
+            إلغاء الكل
+          </Button>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {months.map((month) => {
+          const on = !picked || picked.has(month);
+          return (
+            <button
+              key={month}
+              type="button"
+              onClick={() => toggle(month)}
+              aria-pressed={on}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium tabular-nums transition-colors",
+                picked && on
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : on
+                    ? "border-primary/40 bg-primary/10 text-foreground hover:bg-primary/20"
+                    : "border-border text-muted-foreground opacity-60 hover:opacity-100",
+              )}
+            >
+              {month}
+            </button>
+          );
+        })}
+        {months.length === 0 && <span className="text-xs text-muted-foreground">—</span>}
+      </div>
+    </div>
+  );
+}
+
 function DropZone({
   icon: Icon,
   title,
@@ -856,13 +1013,24 @@ export function InspireClient() {
   const [excludedSuppliers, setExcludedSuppliers] = React.useState<Set<string>>(
     new Set(),
   );
+  // Months to review (null = all): purchase months, and months the بونص arrived.
+  const [pickedPurchase, setPickedPurchase] = React.useState<Set<string> | null>(null);
+  const [pickedBonus, setPickedBonus] = React.useState<Set<string> | null>(null);
+  // Item filter (status + code/name search), applied inside every month.
+  const [itemFilter, setItemFilter] = React.useState<ItemFilter>({ status: "all", query: "" });
+  const filterActive = itemFilter.status !== "all" || itemFilter.query.trim() !== "";
 
   const addPurchaseFiles = async (files: File[]) => {
-    const htmls = files.filter(isHtml);
-    if (htmls.length === 0) {
+    const allHtmls = files.filter(isHtml);
+    if (allHtmls.length === 0) {
       toast.error("Please choose .htm or .html purchase files.");
       return;
     }
+    // A file already loaded would count every line twice — skip it.
+    const htmls = allHtmls.filter((f) => !purchaseFiles.includes(f.name));
+    for (const f of allHtmls)
+      if (!htmls.includes(f)) toast.warning(`${f.name} is already loaded — skipped`);
+    if (htmls.length === 0) return;
     setBusy(true);
     try {
       const parsed: PurchaseRow[] = [];
@@ -914,6 +1082,9 @@ export function InspireClient() {
     setStockFiles([]);
     setExcludedSuppliers(new Set());
     setRemovedCodes(new Set());
+    setPickedPurchase(null);
+    setPickedBonus(null);
+    setItemFilter({ status: "all", query: "" });
   };
 
   const toggleSupplier = (name: string) =>
@@ -924,18 +1095,13 @@ export function InspireClient() {
       return next;
     });
 
-  // Purchase lines whose item code is one of the uploaded Inspire stock codes,
-  // plus the other codes of those products (تشغيلات, ح.ا) — e.g. بونص booked
-  // under a 30 TAB code the stock file doesn't list.
+  // Only purchase lines whose item code is listed in the uploaded stock sheet —
+  // no other company's items and no codes outside the sheet. Codes of one
+  // product that ARE in the sheet (تشغيلات, ح.ا) still merge in buildMonths.
   const matchedRows = React.useMemo(() => {
     if (!stockCodes) return [];
     const set = new Set(stockCodes);
-    const groups = new Set(
-      purchaseRows.filter((r) => set.has(r[CONTRACT_COLUMNS.code])).map(itemKey),
-    );
-    return purchaseRows.filter(
-      (r) => set.has(r[CONTRACT_COLUMNS.code]) || groups.has(itemKey(r)),
-    );
+    return purchaseRows.filter((r) => set.has(r[CONTRACT_COLUMNS.code]));
   }, [purchaseRows, stockCodes]);
 
   // Unique suppliers in the matched lines, biggest paid value first.
@@ -991,9 +1157,20 @@ export function InspireClient() {
     return [...removedCodes].map((code) => ({ code, product: names.get(code) ?? "" }));
   }, [matchedRows, removedCodes]);
 
-  const { months, invoices, surplus } = React.useMemo(
-    () => buildMonths(keptRows),
-    [keptRows],
+  const { months, invoices: allInvoices, surplus, allPurchaseMonths, allBonusMonths } =
+    React.useMemo(
+      () => buildMonths(keptRows, pickedPurchase, pickedBonus),
+      [keptRows, pickedPurchase, pickedBonus],
+    );
+  // Invoices of the picked months: paid invoices by purchase month, بونص-only
+  // invoices by بونص month.
+  const invoices = React.useMemo(
+    () =>
+      allInvoices.filter((inv) => {
+        const picked = inv.paidUnits > 0 ? pickedPurchase : pickedBonus;
+        return !picked || picked.has(monthOf(inv.date));
+      }),
+    [allInvoices, pickedPurchase, pickedBonus],
   );
   const monthsTotal = React.useMemo(
     () =>
@@ -1012,6 +1189,123 @@ export function InspireClient() {
   );
 
   const ready = purchaseRows.length > 0 && stockCodes !== null;
+
+  // Export what's on screen to .xlsx: the picked months / suppliers / removed
+  // items, and the active item filter (status + search). One row per item per
+  // month, plus a month summary sheet.
+  const exportExcel = async () => {
+    const STATUS_LABEL: Record<ItemStatus, string> = {
+      ok: "وصل",
+      missing: "موصلش",
+      pending: "في انتظار",
+      none: "بدون بونص مستحق",
+    };
+    const shown = months
+      .map((m) => ({ m, items: m.items.filter((it) => matchesFilter(it, itemFilter)) }))
+      .filter(({ items }) => !filterActive || items.length > 0);
+    const itemRows = shown.flatMap(({ m, items }) =>
+      items.map((it) => ({
+        الشهر: m.month,
+        الشريحة: m.slab?.name ?? "لم تتحقق شريحة",
+        الأكواد: it.allCodes.map((c) => c.code).join(" , ") || it.codes.join(" , "),
+        "اسم الصنف": it.product,
+        "الكمية المدفوعة": Number(it.paidUnits.toFixed(2)),
+        "نسبة البونص %": it.pct,
+        "الحد الأدنى": it.min,
+        "البونص المستحق": it.expected,
+        "البونص المستلم": Number(it.received.toFixed(2)),
+        "الناقص": it.missing,
+        الحالة: STATUS_LABEL[itemStatus(it)],
+        "تفاصيل الاستلام": it.receipts
+          .map((r) => `${qtyFmt(r.qty)} في ${r.date} فاتورة ${r.invoice} كود ${r.code}`)
+          .join(" | "),
+      })),
+    );
+    if (itemRows.length === 0) {
+      toast.error("No rows to export.");
+      return;
+    }
+    try {
+      const XLSX = await import("xlsx-js-style");
+      const JSZip = (await import("jszip")).default;
+
+      // Every cell centered, bold header, columns auto-fit to their longest value.
+      const styled = (rows: Record<string, string | number>[]) => {
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const range = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+        for (let R = range.s.r; R <= range.e.r; R++)
+          for (let C = range.s.c; C <= range.e.c; C++) {
+            const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })] as
+              | { s?: unknown }
+              | undefined;
+            if (!cell) continue;
+            cell.s = {
+              alignment: { horizontal: "center", vertical: "center" },
+              ...(R === 0 ? { font: { bold: true } } : {}),
+            };
+          }
+        const keys = Object.keys(rows[0] ?? {});
+        ws["!cols"] = keys.map((k) => ({
+          wch: Math.min(
+            90,
+            Math.max(k.length, ...rows.map((r) => String(r[k] ?? "").length)) + 2,
+          ),
+        }));
+        return ws;
+      };
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, styled(itemRows), "الأصناف");
+      const summary = styled(
+        shown.map(({ m }) => ({
+          الشهر: m.month,
+          "عدد الفواتير": m.invoices.length,
+          "قيمة الشراء": Math.round(m.value),
+          الشريحة: m.slab?.name ?? "لم تتحقق شريحة",
+          "البونص المستحق": m.expected,
+          "البونص المستلم": Number(m.bonusUnits.toFixed(2)),
+          الناقص: m.missing,
+          "في انتظار": m.pendingMissing,
+        })),
+      );
+      XLSX.utils.book_append_sheet(wb, summary, "الشهور");
+      const range = shown.length
+        ? `${shown[0].m.month}_${shown[shown.length - 1].m.month}`.replace(/\//g, "-")
+        : "all";
+
+      // The writer can't emit frozen panes: patch every sheet's XML to freeze
+      // the header row (same approach as the orders-review export).
+      const pane =
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' +
+        '<selection pane="bottomLeft" activeCell="A2" sqref="A2"/>';
+      const zip = await JSZip.loadAsync(
+        XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer,
+      );
+      for (const path of Object.keys(zip.files).filter((p) =>
+        /^xl\/worksheets\/sheet\d+\.xml$/.test(p),
+      )) {
+        const xml = await zip.file(path)!.async("string");
+        let patched = xml.replace(/<((?:\w+:)?sheetView)\b([^>]*)\/>/, `<$1$2>${pane}</$1>`);
+        if (patched === xml)
+          patched = xml.replace(/(<(?:\w+:)?sheetView\b[^>]*>)/, `$1${pane}`);
+        zip.file(path, patched);
+      }
+      const blob = await zip.generateAsync({
+        type: "blob",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `inspire-${range}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Couldn't export the sheet.");
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -1110,6 +1404,23 @@ export function InspireClient() {
             </div>
           )}
 
+          {allPurchaseMonths.length > 0 && (
+            <div className="grid gap-3 md:grid-cols-2">
+              <MonthPicker
+                title="شهور الشراء اللي هتراجعها"
+                months={allPurchaseMonths}
+                picked={pickedPurchase}
+                onChange={setPickedPurchase}
+              />
+              <MonthPicker
+                title="البونص اللي وصل في شهور"
+                months={allBonusMonths}
+                picked={pickedBonus}
+                onChange={setPickedBonus}
+              />
+            </div>
+          )}
+
           {months.length > 0 && (
             <div className="space-y-2">
               <h2 className="text-sm font-bold">Per month · اضغط على الشهر لعرض البونص</h2>
@@ -1118,6 +1429,51 @@ export function InspireClient() {
                 الشريحة حسب إجمالي الشهر. «في انتظار» = البيانات لا تغطي نهاية الشهر التالي بعد.
                 {surplus > 0 && <> · بونص زائد غير مرتبط بشهر مستحق: {qtyFmt(surplus)}</>}
               </p>
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3" dir="rtl">
+                <input
+                  type="search"
+                  value={itemFilter.query}
+                  onChange={(e) => setItemFilter((f) => ({ ...f, query: e.target.value }))}
+                  placeholder="ابحث بالكود أو اسم الصنف…"
+                  className="h-8 w-64 rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                />
+                {(
+                  [
+                    ["all", "الكل", "border-primary bg-primary text-primary-foreground"],
+                    ["ok", "✓ وصل", "border-emerald-500 bg-emerald-500 text-white"],
+                    ["missing", "✗ موصلش", "border-red-500 bg-red-500 text-white"],
+                    ["pending", "⏳ في انتظار", "border-amber-500 bg-amber-500 text-white"],
+                    ["none", "بدون بونص مستحق", "border-foreground/40 bg-muted text-foreground"],
+                  ] as const
+                ).map(([status, label, onCls]) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setItemFilter((f) => ({ ...f, status }))}
+                    aria-pressed={itemFilter.status === status}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                      itemFilter.status === status
+                        ? onCls
+                        : "border-border text-muted-foreground hover:bg-muted",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+                {filterActive && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setItemFilter({ status: "all", query: "" })}
+                  >
+                    <X /> مسح الفلتر
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" className="ms-auto" onClick={exportExcel}>
+                  <Download /> Export to Excel
+                </Button>
+              </div>
               <div className="overflow-x-auto rounded-xl border">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 text-xs text-muted-foreground">
@@ -1133,7 +1489,14 @@ export function InspireClient() {
                   </thead>
                   <tbody>
                     {months.map((m) => {
-                      const open = openMonth === m.month;
+                      // With a filter on, only months with matching items show,
+                      // already expanded.
+                      if (
+                        filterActive &&
+                        !m.items.some((it) => matchesFilter(it, itemFilter))
+                      )
+                        return null;
+                      const open = filterActive || openMonth === m.month;
                       return (
                         <React.Fragment key={m.month}>
                           <tr
@@ -1169,7 +1532,7 @@ export function InspireClient() {
                           {open && (
                             <tr>
                               <td colSpan={7} className="p-0">
-                                <MonthDetail month={m} onRemove={removeCode} />
+                                <MonthDetail month={m} filter={itemFilter} onRemove={removeCode} />
                               </td>
                             </tr>
                           )}

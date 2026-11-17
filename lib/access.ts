@@ -97,6 +97,30 @@ export async function canUseFahmy(): Promise<boolean> {
   return isFahmyEmail(await currentUserEmail());
 }
 
+// Emails allowed to open the Inspire page WITHOUT full access. Standalone like
+// FAHMY_EMAILS: grants only /inspire (plus the pages open to everyone). Extra
+// ones can be added via the INSPIRE_EMAILS env var (comma-separated).
+const INSPIRE_EMAILS = [
+  "wafaaelshouratarshouby@gmail.com",
+  ...(process.env.INSPIRE_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+];
+
+/** Whether the signed-in user may open the Inspire page. */
+export async function canUseInspire(): Promise<boolean> {
+  if (await hasFullAccess()) return true;
+  const email = await currentUserEmail();
+  return !!email && INSPIRE_EMAILS.includes(email.toLowerCase());
+}
+
+/** Guard for /inspire: full-access users plus the Inspire allow-list. */
+export async function requireInspireAccess(): Promise<void> {
+  if (await canUseInspire()) return;
+  await requireFullAccess(); // redirects to the user's own page
+}
+
 // Emails allowed to update / delete ANY saved contract (everyone can already
 // view them; owners can always edit their own). Extra ones can be added via the
 // CONTRACT_EDITOR_EMAILS env var (comma-separated). Grants nothing else.
