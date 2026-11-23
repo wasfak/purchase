@@ -826,6 +826,66 @@ export function extractStockCodeCompanies(html: string): Map<string, string> {
   return out;
 }
 
+// --- Sales report (Cosmo) ------------------------------------------------------
+//
+// "مبيعات فـــرع مـن الأصــناف خـلال فــتـرة" export. Only the grand-total row
+// at the bottom ("= الإجــــــمالي") is used: [مبلغ الربح, المبلغ, الكمية].
+// Profit and amount are printed hidden but are in the HTML. The period
+// (خلال الفترة من … إلـــى …) sits in a header row.
+
+export type SalesReport = {
+  amount: number; // المبلغ — grand total
+  qty: number; // الكمية — grand total
+  profit: number; // مبلغ الربح — grand total
+  found: boolean; // a total row was found
+  from: string; // "yyyy/mm/dd" or ""
+  to: string;
+};
+
+export function parseSalesHtml(html: string): SalesReport {
+  const out: SalesReport = {
+    amount: 0,
+    qty: 0,
+    profit: 0,
+    found: false,
+    from: "",
+    to: "",
+  };
+  const rowRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(html)) !== null) {
+    const inner = rowMatch[1];
+    if (/خلال الفترة/.test(inner)) {
+      // Dates may be unpadded ("2026/1/1") — pad to yyyy/mm/dd, then the
+      // earliest is the start and the latest the end.
+      const dates = (inner.match(/\d{4}\/\d{1,2}\/\d{1,2}/g) ?? [])
+        .map((d) => {
+          const [y, m, day] = d.split("/");
+          return `${y}/${m.padStart(2, "0")}/${day.padStart(2, "0")}`;
+        })
+        .sort();
+      if (dates.length) {
+        out.from = dates[0] ?? "";
+        out.to = dates[dates.length - 1] ?? "";
+      }
+      continue;
+    }
+    // Grand total: match ignoring tatweel (الإجــــــمالي → الإجمالي).
+    if (!/الإجمالي/.test(inner.replace(/ـ/g, ""))) continue;
+    const nums = extractCells(inner)
+      .map((c) => cleanNumber(c.text))
+      .filter((t) => /^-?\d+(\.\d+)?$/.test(t))
+      .map(Number);
+    if (nums.length >= 3) {
+      out.profit = nums[0] ?? 0;
+      out.amount = nums[1] ?? 0;
+      out.qty = nums[2] ?? 0;
+      out.found = true;
+    }
+  }
+  return out;
+}
+
 // --- تشغيلات (linked code variants) -----------------------------------------
 //
 // One product lives under several codes whose names differ only by a

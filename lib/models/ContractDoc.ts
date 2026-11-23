@@ -28,6 +28,9 @@ const ContractDocSchema = new Schema(
     dataThrough: { type: String, default: "" },
     // Array of rows, each a values-array (Cell[]) aligned to `columns`.
     rows: { type: [Schema.Types.Mixed], default: [] },
+    // Which contracts tool saved it: "normal" (default, incl. older docs with
+    // no kind) or "cosmo" (Cosmo contracts mode). Each tool lists only its own.
+    kind: { type: String, default: "normal", index: true },
   },
   { timestamps: true },
 );

@@ -443,6 +443,12 @@ async function exportSummary({
 // --- Hero -------------------------------------------------------------------
 
 function Hero({
+  targetCard,
+  targetMode,
+  grossAchieved,
+  deduction = "",
+  onDeductionChange,
+  salesTotal,
   achieved,
   insights,
   m,
@@ -452,6 +458,12 @@ function Hero({
   insights: Insights;
   m: Model;
   onExport: () => void;
+  targetCard?: boolean;
+  targetMode?: "year" | "quarter";
+  grossAchieved?: number;
+  deduction?: string;
+  onDeductionChange?: (v: string) => void;
+  salesTotal?: number;
 }) {
   const shown = useCountUp(achieved);
   const { next, top, reached } = m;
@@ -481,7 +493,11 @@ function Hero({
   else if (m.goal > 0 && m.remaining > 0)
     headline = (
       <>
-        You need <b>{full(m.remaining)} {CURRENCY}</b> more to hit the year
+        You need{" "}
+        <b className={cn(targetCard && "text-destructive!")}>
+          {full(m.remaining)} {CURRENCY}
+        </b>{" "}
+        more to hit the year
         target.
       </>
     );
@@ -497,7 +513,15 @@ function Hero({
     );
   else
     headline = (
-      <>Add rebate slabs (or a year target) below to start tracking progress.</>
+      targetCard ? (
+        <>
+          Type the target above
+          {targetMode === "quarter" ? " for all four quarters" : ""} to see
+          the contract performance.
+        </>
+      ) : (
+        <>Add rebate slabs (or a year target) below to start tracking progress.</>
+      )
     );
 
   return (
@@ -508,7 +532,12 @@ function Hero({
         className="pointer-events-none absolute inset-0 opacity-60 [background-image:radial-gradient(var(--border)_1px,transparent_1px)] [background-size:18px_18px] [mask-image:linear-gradient(to_right,black,transparent_70%)]"
       />
       <div className="relative flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0 space-y-5">
+        <div
+          className={cn(
+            "min-w-0 space-y-5",
+            salesTotal !== undefined && "flex-1",
+          )}
+        >
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
               Contract performance
@@ -527,15 +556,62 @@ function Hero({
           </div>
 
           <div>
-            <p className="text-sm text-muted-foreground">Total buy so far</p>
-            <p className="mt-1 flex items-baseline gap-2">
-              <span className="text-4xl font-semibold tabular-nums tracking-tight sm:text-6xl">
-                {full(shown)}
-              </span>
-              <span className="text-lg font-medium text-muted-foreground">
-                {CURRENCY}
-              </span>
-            </p>
+            <div className="flex flex-wrap items-start justify-between gap-x-10 gap-y-4">
+              <div>
+                <p className="text-sm text-muted-foreground">Total buy so far</p>
+                <p className="mt-1 flex items-baseline gap-2">
+                  <span className="text-4xl font-semibold tabular-nums tracking-tight sm:text-6xl">
+                    {full(shown)}
+                  </span>
+                  <span className="text-lg font-medium text-muted-foreground">
+                    {CURRENCY}
+                  </span>
+                </p>
+              </div>
+              {salesTotal !== undefined && (
+                <div className="text-right">
+                  <p className="text-sm text-muted-foreground">Total sales</p>
+                  <p className="mt-1 flex items-baseline justify-end gap-2">
+                    <span className="text-4xl font-semibold tabular-nums tracking-tight sm:text-6xl">
+                      {full(salesTotal)}
+                    </span>
+                    <span className="text-lg font-medium text-muted-foreground">
+                      {CURRENCY}
+                    </span>
+                  </p>
+                </div>
+              )}
+            </div>
+            {onDeductionChange && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                <label
+                  htmlFor="buy-deduction"
+                  className="font-medium text-muted-foreground"
+                  dir="rtl"
+                >
+                  تخصيم مرتجعات
+                </label>
+                <input
+                  id="buy-deduction"
+                  type="text"
+                  inputMode="decimal"
+                  value={withCommas(deduction)}
+                  onChange={(e) => onDeductionChange(cleanAmount(e.target.value))}
+                  placeholder="0"
+                  className={cn(amountInput, "w-40 bg-background/80")}
+                />
+                <span className="text-muted-foreground">{CURRENCY}</span>
+                {(Number(deduction) || 0) > 0 && grossAchieved !== undefined && (
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {full(grossAchieved)}{" "}
+                    <b className="font-semibold text-destructive">
+                      − {full(Number(deduction) || 0)}
+                    </b>{" "}
+                    = {full(achieved)} {CURRENCY}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           <p className="max-w-2xl text-base leading-relaxed text-foreground/80 [&_b]:font-semibold [&_b]:text-foreground">
@@ -570,6 +646,8 @@ function Hero({
         </div>
 
         {m.goal > 0 && (
+          <div className="flex flex-col gap-6 self-start lg:items-end lg:self-center">
+        {m.goal > 0 && (
           <div className="flex items-center gap-5 self-start lg:self-center">
             <GoalRing
               progress={m.progress}
@@ -579,7 +657,9 @@ function Hero({
             <dl className="space-y-3 text-sm">
               <div>
                 <dt className="text-xs text-muted-foreground">
-                  {m.goalLabel} target
+                  {targetCard && m.goalLabel.endsWith("target")
+                    ? m.goalLabel
+                    : `${m.goalLabel} target`}
                 </dt>
                 <dd className="font-semibold tabular-nums">
                   {full(m.goal)} {CURRENCY}
@@ -593,15 +673,175 @@ function Hero({
                   className={cn(
                     "font-semibold tabular-nums",
                     m.remaining <= 0 && "text-viz-good-ink",
+                    targetCard && m.remaining > 0 && "text-destructive",
                   )}
                 >
+                  {targetCard && m.remaining > 0 ? "−" : ""}
                   {full(Math.abs(m.remaining))} {CURRENCY}
                 </dd>
               </div>
             </dl>
           </div>
         )}
+          </div>
+        )}
       </div>
+    </section>
+  );
+}
+
+// --- Target -------------------------------------------------------------------
+
+// Keep digits and one decimal point from a typed amount.
+const cleanAmount = (v: string) =>
+  v.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+
+const amountInput =
+  "h-9 rounded-lg border border-border bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40";
+
+function TargetCard({
+  target,
+  onTargetChange,
+  mode,
+  onModeChange,
+  quarterTargets,
+  onQuarterTargetsChange,
+  quarterTotals,
+  hasSlabs,
+}: {
+  target: string;
+  onTargetChange: (v: string) => void;
+  mode: "year" | "quarter";
+  onModeChange: (m: "year" | "quarter") => void;
+  quarterTargets: string[];
+  onQuarterTargetsChange: (q: string[]) => void;
+  quarterTotals: number[];
+  hasSlabs: boolean;
+}) {
+  const setQuarter = (i: number, v: string) =>
+    onQuarterTargetsChange(
+      [0, 1, 2, 3].map((j) => (j === i ? cleanAmount(v) : quarterTargets[j] ?? "")),
+    );
+  return (
+    <section className={card}>
+      <SectionTitle
+        icon={Target}
+        title="Target"
+        hint={
+          hasSlabs
+            ? "Rebate slabs are set — the performance card tracks the next slab; this target is kept with the contract."
+            : "The buy target from the contract — one figure for the year, or one per quarter."
+        }
+        right={
+          <div className="inline-flex rounded-lg border border-border bg-secondary p-0.5 text-sm">
+            {(
+              [
+                ["year", "Year"],
+                ["quarter", "Per quarter"],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => onModeChange(k)}
+                aria-pressed={mode === k}
+                className={cn(
+                  "rounded-md px-3 py-1.5 font-medium transition-colors",
+                  mode === k
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        }
+      />
+
+      {mode === "year" ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <label htmlFor="year-target" className="text-sm font-medium">
+            Year target
+          </label>
+          <input
+            id="year-target"
+            type="text"
+            inputMode="decimal"
+            value={withCommas(target)}
+            onChange={(e) => onTargetChange(cleanAmount(e.target.value))}
+            placeholder="e.g. 12,000,000"
+            className={cn(amountInput, "w-48")}
+          />
+          <span className="text-xs text-muted-foreground">{CURRENCY}</span>
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => {
+            const t = Number(quarterTargets[i]) || 0;
+            const got = quarterTotals[i] ?? 0;
+            const pct = t > 0 ? Math.min(100, (got / t) * 100) : 0;
+            const left = t - got;
+            return (
+              <div
+                key={i}
+                className="space-y-2 rounded-xl border border-border bg-muted/30 p-3"
+              >
+                <label
+                  htmlFor={`q-target-${i}`}
+                  className="flex items-baseline justify-between text-sm font-medium"
+                >
+                  Q{i + 1}
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {QUARTER_MONTHS[i]}
+                  </span>
+                </label>
+                <input
+                  id={`q-target-${i}`}
+                  type="text"
+                  inputMode="decimal"
+                  value={withCommas(quarterTargets[i] ?? "")}
+                  onChange={(e) => setQuarter(i, e.target.value)}
+                  placeholder="Target"
+                  className={cn(amountInput, "w-full")}
+                />
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={cn(
+                      "h-full rounded-full",
+                      t > 0 && left <= 0 ? "bg-viz-good" : "bg-viz-1",
+                    )}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <p className="text-xs tabular-nums text-muted-foreground">
+                  Bought <b className="font-semibold text-foreground">{full(got)}</b>
+                  {t > 0 && (
+                    <>
+                      {" · "}
+                      {left > 0 ? (
+                        <b className="font-semibold text-destructive">
+                          −{full(left)} to go
+                        </b>
+                      ) : (
+                        <b className="font-semibold text-viz-good-ink">
+                          +{full(-left)} over
+                        </b>
+                      )}
+                    </>
+                  )}
+                </p>
+              </div>
+            );
+          })}
+          <p className="text-xs text-muted-foreground sm:col-span-2 xl:col-span-4">
+            Year target = sum of the quarters:{" "}
+            <b className="font-semibold tabular-nums text-foreground">
+              {full(Number(target) || 0)} {CURRENCY}
+            </b>
+          </p>
+        </div>
+      )}
     </section>
   );
 }
@@ -617,13 +857,19 @@ function SlabEditor({
   onSlabsChange,
   target,
   onTargetChange,
+  showYearTarget,
   achieved,
+  redGap = false,
 }: {
   slabs: ContractSlab[];
   onSlabsChange: React.Dispatch<React.SetStateAction<ContractSlab[]>>;
   target: string;
   onTargetChange: (v: string) => void;
+  /** Inline year target (Normal mode — Cosmo has its own Target card). */
+  showYearTarget: boolean;
   achieved: number;
+  /** Show the amount still left to a slab in red with a minus (Cosmo). */
+  redGap?: boolean;
 }) {
   const update = (i: number, patch: Partial<ContractSlab>) =>
     onSlabsChange((prev) =>
@@ -633,7 +879,7 @@ function SlabEditor({
     "h-9 rounded-lg border border-border bg-background px-3 text-sm tabular-nums outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40";
   return (
     <div className="space-y-4 rounded-xl border border-dashed border-border bg-muted/30 p-4">
-      {slabs.length === 0 && (
+      {showYearTarget && slabs.length === 0 && (
         <div className="flex flex-wrap items-center gap-3">
           <label htmlFor="year-target" className="text-sm font-medium">
             Year target
@@ -643,11 +889,7 @@ function SlabEditor({
             type="text"
             inputMode="decimal"
             value={withCommas(target)}
-            onChange={(e) =>
-              onTargetChange(
-                e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1"),
-              )
-            }
+            onChange={(e) => onTargetChange(cleanAmount(e.target.value))}
             placeholder="e.g. 12,000,000"
             className={cn(input, "w-48")}
           />
@@ -719,7 +961,12 @@ function SlabEditor({
                           Reached
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">
+                        <span
+                          className={
+                            redGap ? "font-medium text-destructive" : "text-muted-foreground"
+                          }
+                        >
+                          {redGap ? "−" : ""}
                           {full(gap)} left
                         </span>
                       )}
@@ -770,6 +1017,8 @@ function Ladder({
   onSlabsChange,
   target,
   onTargetChange,
+  showYearTarget,
+  redGap = false,
 }: {
   achieved: number;
   m: Model;
@@ -777,6 +1026,8 @@ function Ladder({
   onSlabsChange: React.Dispatch<React.SetStateAction<ContractSlab[]>>;
   target: string;
   onTargetChange: (v: string) => void;
+  showYearTarget: boolean;
+  redGap?: boolean;
 }) {
   const [editing, setEditing] = React.useState(false);
   const hasSlabs = m.slabRows.length > 0;
@@ -969,7 +1220,13 @@ function Ladder({
                           />
                         </div>
                         <p className="text-muted-foreground">
-                          <b className="font-semibold tabular-nums text-foreground">
+                          <b
+                            className={cn(
+                              "font-semibold tabular-nums",
+                              redGap ? "text-destructive" : "text-foreground",
+                            )}
+                          >
+                            {redGap ? "−" : ""}
                             {full(gap)}
                           </b>{" "}
                           to go
@@ -1013,10 +1270,110 @@ function Ladder({
             onSlabsChange={onSlabsChange}
             target={target}
             onTargetChange={onTargetChange}
+            showYearTarget={showYearTarget}
             achieved={achieved}
+            redGap={redGap}
           />
         </div>
       )}
+    </section>
+  );
+}
+
+// Cosmo, per-quarter mode: each quarter has its own rebate slabs, measured
+// against that quarter's buy only. A quarter earns the rebate of the highest
+// slab it reached; the year's rebate is the sum of the four.
+function QuarterLadder({
+  quarterSlabs,
+  onQuarterSlabsChange,
+  quarterTotals,
+}: {
+  quarterSlabs: ContractSlab[][];
+  onQuarterSlabsChange: React.Dispatch<React.SetStateAction<ContractSlab[][]>>;
+  quarterTotals: number[];
+}) {
+  const setterFor =
+    (i: number): React.Dispatch<React.SetStateAction<ContractSlab[]>> =>
+    (action) =>
+      onQuarterSlabsChange((prev) =>
+        [0, 1, 2, 3].map((j) => {
+          const list = prev[j] ?? [];
+          if (j !== i) return list;
+          return typeof action === "function" ? action(list) : action;
+        }),
+      );
+
+  const quarters = [0, 1, 2, 3].map((i) => {
+    const got = quarterTotals[i] ?? 0;
+    const rows = slabStatuses(quarterSlabs[i], got);
+    return {
+      got,
+      rows,
+      reached: rows.filter((s) => s.reached).at(-1),
+      next: rows.find((s) => !s.reached),
+    };
+  });
+  const earned = quarters.reduce((a, q) => a + (q.reached?.incentive ?? 0), 0);
+
+  return (
+    <section className={card}>
+      <SectionTitle
+        icon={Trophy}
+        title="Rebate ladder — per quarter"
+        hint="Each quarter has its own slabs from the contract, measured on that quarter's buy. A quarter earns the rebate of the highest slab it reached."
+        right={
+          <span className="rounded-full bg-viz-good/15 px-3 py-1 text-xs font-semibold text-viz-good-ink">
+            Earned so far · {full(earned)} {CURRENCY}
+          </span>
+        }
+      />
+      <div className="grid gap-4 lg:grid-cols-2">
+        {quarters.map((q, i) => (
+          <div key={i} className="space-y-3 rounded-xl border border-border p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm font-semibold">
+                Q{i + 1}{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  {QUARTER_MONTHS[i]}
+                </span>
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Bought{" "}
+                <b className="font-semibold tabular-nums text-foreground">
+                  {full(q.got)} {CURRENCY}
+                </b>
+              </span>
+            </div>
+            {q.rows.length > 0 && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                {q.reached ? (
+                  <span className="font-medium text-viz-good-ink">
+                    Slab {q.rows.indexOf(q.reached) + 1} reached →{" "}
+                    {full(q.reached.incentive)} {CURRENCY}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">No slab reached yet</span>
+                )}
+                {q.next && (
+                  <span className="font-medium text-destructive">
+                    −{full(q.next.target - q.got)} to Slab{" "}
+                    {q.rows.indexOf(q.next) + 1}
+                  </span>
+                )}
+              </div>
+            )}
+            <SlabEditor
+              slabs={quarterSlabs[i] ?? []}
+              onSlabsChange={setterFor(i)}
+              target=""
+              onTargetChange={() => {}}
+              showYearTarget={false}
+              achieved={q.got}
+              redGap
+            />
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -1486,13 +1843,23 @@ function HowItWorks() {
 // --- Public components --------------------------------------------------------------
 
 export function ContractOverview({
-  achieved,
+  achieved: grossAchieved,
   insights,
   quarterTotals,
   slabs,
   onSlabsChange,
   target,
   onTargetChange,
+  targetMode,
+  onTargetModeChange,
+  quarterTargets,
+  onQuarterTargetsChange,
+  targetCard = false,
+  quarterSlabs,
+  onQuarterSlabsChange,
+  deduction = "",
+  onDeductionChange,
+  salesTotal,
   contractName,
   basisLabel,
   topItems,
@@ -1504,12 +1871,40 @@ export function ContractOverview({
   onSlabsChange: React.Dispatch<React.SetStateAction<ContractSlab[]>>;
   target: string;
   onTargetChange: (v: string) => void;
+  targetMode: "year" | "quarter";
+  onTargetModeChange: (m: "year" | "quarter") => void;
+  quarterTargets: string[];
+  onQuarterTargetsChange: (q: string[]) => void;
+  /** Cosmo: the Target card (year / per quarter) on top. Normal keeps the
+   *  year target inside the rebate ladder. */
+  targetCard?: boolean;
+  quarterSlabs?: ContractSlab[][];
+  onQuarterSlabsChange?: React.Dispatch<React.SetStateAction<ContractSlab[][]>>;
+  /** Cosmo: amount taken off the Total buy so far (as typed). */
+  deduction?: string;
+  onDeductionChange?: (v: string) => void;
+  /** Cosmo: grand total of the uploaded sales file(s), shown beside the buy. */
+  salesTotal?: number;
   contractName: string;
   basisLabel: string;
   /** Top items as shown (تشغيلات linked or not). */
   topItems: Insights["topItems"];
 }) {
-  const m = buildModel(achieved, insights, slabs, target);
+  // Cosmo: no performance maths until the target is typed in full (year
+  // figure, or all four quarters). Slabs, when set, drive it as before.
+  // Cosmo: the typed deduction comes off the Total buy before any maths.
+  const deducted = targetCard ? Number(deduction) || 0 : 0;
+  const achieved = Math.max(0, grossAchieved - deducted);
+  const perQuarter = targetCard && targetMode === "quarter";
+  const yearSlabs = perQuarter ? [] : slabs;
+  const targetReady =
+    !targetCard ||
+    yearSlabs.length > 0 ||
+    (targetMode === "quarter"
+      ? quarterTargets.length === 4 &&
+        quarterTargets.every((q) => (Number(q) || 0) > 0)
+      : (Number(target) || 0) > 0);
+  const m = buildModel(achieved, insights, yearSlabs, targetReady ? target : "");
   const onExport = () =>
     exportSummary({
       contractName,
@@ -1522,16 +1917,49 @@ export function ContractOverview({
     }).catch(() => toast.error("Couldn't build the summary"));
   return (
     <div className="space-y-5">
-      <Hero achieved={achieved} insights={insights} m={m} onExport={onExport} />
-      <KpiRow m={m} insights={insights} />
-      <Ladder
-        achieved={achieved}
-        m={m}
-        slabs={slabs}
-        onSlabsChange={onSlabsChange}
+      {targetCard && (
+      <TargetCard
         target={target}
         onTargetChange={onTargetChange}
+        mode={targetMode}
+        onModeChange={onTargetModeChange}
+        quarterTargets={quarterTargets}
+        onQuarterTargetsChange={onQuarterTargetsChange}
+        quarterTotals={quarterTotals}
+        hasSlabs={slabs.length > 0}
       />
+      )}
+      <Hero
+        targetCard={targetCard}
+        targetMode={targetMode}
+        grossAchieved={grossAchieved}
+        deduction={deduction}
+        onDeductionChange={targetCard ? onDeductionChange : undefined}
+        salesTotal={targetCard ? salesTotal : undefined}
+        achieved={achieved}
+        insights={insights}
+        m={m}
+        onExport={onExport}
+      />
+      <KpiRow m={m} insights={insights} />
+      {perQuarter && quarterSlabs && onQuarterSlabsChange ? (
+        <QuarterLadder
+          quarterSlabs={quarterSlabs}
+          onQuarterSlabsChange={onQuarterSlabsChange}
+          quarterTotals={quarterTotals}
+        />
+      ) : (
+        <Ladder
+          achieved={achieved}
+          m={m}
+          slabs={slabs}
+          onSlabsChange={onSlabsChange}
+          target={target}
+          onTargetChange={onTargetChange}
+          showYearTarget={!targetCard}
+          redGap={targetCard}
+        />
+      )}
       <div className="grid gap-5 lg:grid-cols-3">
         <MonthlyChart insights={insights} m={m} />
         <LastThree insights={insights} />

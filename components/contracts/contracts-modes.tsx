@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowLeft, FileText, LineChart } from "lucide-react";
+import { ArrowLeft, FileText, LineChart, Sparkles } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { ContractsClient } from "@/components/contracts/contracts-client";
 import { FahmyClient } from "@/components/fahmy/fahmy-client";
 
-type Mode = "normal" | "fahmy";
+type Mode = "normal" | "fahmy" | "cosmo";
 
 const MODES: Record<
   Mode,
@@ -31,7 +31,16 @@ const MODES: Record<
       "Full sales analysis from one Excel sheet — brand performance, movers, portfolio churn and the Q4 target plan.",
     icon: LineChart,
   },
+  cosmo: {
+    title: "Cosmo contracts",
+    heading: "Cosmo contracts",
+    desc: "Upload purchase-invoice files, then a stock file — same as normal contracts, saved separately.",
+    blurb: "Same upload logic as normal contracts (buy + stock), with its own saved contracts.",
+    icon: Sparkles,
+  },
 };
+
+
 
 function ModeCard({
   mode,
@@ -81,14 +90,15 @@ export function ContractsModes({ showFahmy }: { showFahmy: boolean }) {
 
   if (mode === null) {
     return (
-      <div className="mx-auto flex max-w-3xl flex-col items-center py-10 text-center">
+      <div className="mx-auto flex max-w-5xl flex-col items-center py-10 text-center">
         <h1 className="text-3xl font-bold tracking-tight">Choose a mode</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Pick the tool you need — you can switch any time.
         </p>
-        <div className="mt-8 grid w-full gap-5 sm:grid-cols-2">
+        <div className="mt-8 grid w-full gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <ModeCard mode="normal" onPick={setMode} />
           <ModeCard mode="fahmy" onPick={setMode} />
+          <ModeCard mode="cosmo" onPick={setMode} />
         </div>
       </div>
     );
@@ -106,7 +116,13 @@ export function ContractsModes({ showFahmy }: { showFahmy: boolean }) {
           <ArrowLeft /> Change mode
         </Button>
       </div>
-      {mode === "normal" ? <ContractsClient /> : <FahmyClient />}
+      {mode === "normal" ? (
+        <ContractsClient key="normal" />
+      ) : mode === "fahmy" ? (
+        <FahmyClient />
+      ) : (
+        <ContractsClient key="cosmo" kind="cosmo" />
+      )}
     </div>
   );
 }

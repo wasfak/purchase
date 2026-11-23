@@ -24,6 +24,12 @@ export type ContractSettings = {
   invoiceDates?: Record<string, string>; // invoiceKey → moved "yyyy/mm/dd"
   priceBasis?: "incTax" | "exTax"; // unit price the buy is measured on
   linkRuns?: boolean; // group تشغيلات (price-tag code variants) into one row
+  // How the target is entered: one year figure, or one per calendar quarter
+  // (then `target` holds their sum, so year-based readouts keep working).
+  targetMode?: "year" | "quarter";
+  quarterTargets?: string[]; // Q1..Q4 as typed (quarter mode)
+  quarterSlabs?: ContractSlab[][]; // Q1..Q4 rebate slabs (quarter mode)
+  deduction?: string; // amount taken off the Total buy so far (Cosmo), as typed
 };
 
 /** One rebate slab: reach `target` buy → earn `pct`% of it as incentive. */

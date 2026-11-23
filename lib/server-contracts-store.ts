@@ -12,6 +12,11 @@ import type {
   ContractSettings,
 } from "@/lib/contracts-store";
 
+/** Which contracts tool a contract belongs to; each lists only its own. */
+export type ContractKind = "normal" | "cosmo";
+
+const kindQuery = (kind: ContractKind) => (kind === "cosmo" ? "kind=cosmo" : "");
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg =
@@ -42,6 +47,7 @@ export async function saveContract(input: {
   settings?: ContractSettings;
   achieved?: number;
   dataThrough?: string;
+  kind?: ContractKind;
 }): Promise<string> {
   const res = await fetch("/api/contracts", {
     method: "POST",
@@ -53,8 +59,13 @@ export async function saveContract(input: {
 }
 
 /** All saved contracts (metadata only), newest first. */
-export async function listContracts(): Promise<ContractMeta[]> {
-  const res = await fetch("/api/contracts", { cache: "no-store" });
+export async function listContracts(
+  kind: ContractKind = "normal",
+): Promise<ContractMeta[]> {
+  const q = kindQuery(kind);
+  const res = await fetch(`/api/contracts${q ? `?${q}` : ""}`, {
+    cache: "no-store",
+  });
   const { contracts } = await jsonOrThrow<{ contracts: ContractMeta[] }>(res);
   return contracts;
 }
@@ -77,8 +88,13 @@ export async function deleteContract(id: string): Promise<void> {
 }
 
 /** Every saved contract WITH its rows, in one request (used by backup export). */
-export async function loadAllContracts(): Promise<Contract[]> {
-  const res = await fetch("/api/contracts?full=1", { cache: "no-store" });
+export async function loadAllContracts(
+  kind: ContractKind = "normal",
+): Promise<Contract[]> {
+  const q = kindQuery(kind);
+  const res = await fetch(`/api/contracts?full=1${q ? `&${q}` : ""}`, {
+    cache: "no-store",
+  });
   const { contracts } = await jsonOrThrow<{ contracts: Contract[] }>(res);
   return contracts;
 }

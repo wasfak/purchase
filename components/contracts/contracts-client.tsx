@@ -4,6 +4,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import {
   Boxes,
+  Receipt,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -35,6 +36,8 @@ import {
   CONTRACT_COLUMN_ORDER,
   extractStockCodeCompanies,
   parsePurchaseHtml,
+  parseSalesHtml,
+  type SalesReport,
   QUARTER_LABELS,
   QUARTER_TOTAL_LABEL,
   type CodeAggregate,
@@ -51,6 +54,7 @@ import {
   loadAllContracts,
   loadContract,
   saveContract,
+  type ContractKind,
 } from "@/lib/server-contracts-store";
 import { migrateContractsToServer } from "@/lib/migrate-to-server";
 import { downloadJson } from "@/lib/backup";
@@ -69,20 +73,35 @@ import {
 
 const HTML_ACCEPT = ".htm,.html";
 
+type TargetMode = "year" | "quarter";
+const EMPTY_QUARTERS = ["", "", "", ""];
+const EMPTY_QUARTER_SLABS: ContractSlab[][] = [[], [], [], []];
+// Sum of the quarter targets as a plain number string ("" when all empty).
+const sumTargets = (q: string[]) => {
+  const t = q.reduce((a, v) => a + (Number(v) || 0), 0);
+  return t > 0 ? String(Math.round(t * 100) / 100) : "";
+};
+
 // Persisted across uploads/reloads: the last companies picked, and per
 // company pick its year target + supplier/code exclusions (so reopening the
 // same company restores them).
-const COMPANIES_KEY = "contracts:companies";
-const COMPANY_SETTINGS_KEY = "contracts:companySettings";
+// Cosmo contracts keep their own copies (prefix "cosmo-contracts:").
+const keyPrefix = (kind: ContractKind) =>
+  kind === "cosmo" ? "cosmo-contracts" : "contracts";
+const companiesKey = (kind: ContractKind) => `${keyPrefix(kind)}:companies`;
+const companySettingsKey = (kind: ContractKind) =>
+  `${keyPrefix(kind)}:companySettings`;
 
 // Stable key for a company pick ("" = all companies).
 const companyKey = (list: string[]) => [...list].sort().join("|");
 const sameCompanies = (a: string[], b: string[]) =>
   companyKey(a) === companyKey(b);
 
-function readCompanySettings(): Record<string, ContractSettings> {
+function readCompanySettings(
+  kind: ContractKind,
+): Record<string, ContractSettings> {
   try {
-    return JSON.parse(localStorage.getItem(COMPANY_SETTINGS_KEY) ?? "{}");
+    return JSON.parse(localStorage.getItem(companySettingsKey(kind)) ?? "{}");
   } catch {
     return {};
   }
@@ -116,6 +135,12 @@ function settingsSnapshot(name: string, s: ContractSettings | undefined): string
     invoiceDates: Object.entries(s?.invoiceDates ?? {}).sort(),
     priceBasis: s?.priceBasis ?? "incTax",
     linkRuns: s?.linkRuns ?? false,
+    targetMode: s?.targetMode ?? "year",
+    quarterTargets: s?.quarterTargets ?? ["", "", "", ""],
+    deduction: s?.deduction ?? "",
+    quarterSlabs: (s?.quarterSlabs ?? [[], [], [], []]).map((l) =>
+      l.map((x) => [x.target, x.pct]),
+    ),
   });
 }
 
@@ -470,7 +495,11 @@ function LinesView({
   );
 }
 
-export function ContractsClient() {
+export function ContractsClient({
+  kind = "normal",
+}: {
+  kind?: ContractKind;
+} = {}) {
   // Live inputs
   const [purchaseRows, setPurchaseRows] = React.useState<PurchaseRow[]>([]);
   const [purchaseFiles, setPurchaseFiles] = React.useState<string[]>([]);
@@ -503,16 +532,23 @@ export function ContractsClient() {
       null,
     );
 
+  // Cosmo: sales report file(s) (مبيعات فرع من الأصناف خلال فترة) — only
+  // each file's grand total (الإجمالي) is kept.
+  const [salesFiles, setSalesFiles] = React.useState<
+    (SalesReport & { name: string })[]
+  >([]);
+  const salesInputRef = React.useRef<HTMLInputElement>(null);
+
   const purchaseInputRef = React.useRef<HTMLInputElement>(null);
   const stockInputRef = React.useRef<HTMLInputElement>(null);
 
   const refreshSaved = React.useCallback(async () => {
     try {
-      setSaved(await listContracts());
+      setSaved(await listContracts(kind));
     } catch {
       // Local storage unavailable — saving just won't be offered.
     }
-  }, []);
+  }, [kind]);
 
   React.useEffect(() => {
     let active = true;
@@ -520,7 +556,8 @@ export function ContractsClient() {
       // One-time, non-destructive copy of any old browser-local contracts up to
       // the server, so a PC change no longer loses them. Safe to run every load
       // (guarded internally); the local copy is never deleted.
-      try {
+      // (Normal contracts only — Cosmo never had browser-local contracts.)
+      if (kind === "normal") try {
         const copied = await migrateContractsToServer();
         if (active && copied > 0) {
           toast.success(
@@ -535,7 +572,7 @@ export function ContractsClient() {
         }
       }
       try {
-        const list = await listContracts();
+        const list = await listContracts(kind);
         if (active) setSaved(list);
       } catch {
         // Server unavailable — saving/listing just won't be offered right now.
@@ -546,7 +583,7 @@ export function ContractsClient() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [kind]);
 
   const stockSet = React.useMemo(
     () => (stockCodes ? new Set(stockCodes) : null),
@@ -580,6 +617,25 @@ export function ContractsClient() {
   // Yearly buy target (as typed); drives the achieved/remaining readout.
   // Remembered per company pick and saved with each contract.
   const [target, setTarget] = React.useState("");
+  // Target entry: one year figure, or one per quarter (target = their sum).
+  const [targetMode, setTargetMode] = React.useState<TargetMode>("year");
+  const [quarterTargets, setQuarterTargets] = React.useState<string[]>(
+    EMPTY_QUARTERS,
+  );
+  // Rebate slabs per quarter (quarter mode): Q1..Q4, each its own tiers.
+  const [quarterSlabs, setQuarterSlabs] = React.useState<ContractSlab[][]>(
+    EMPTY_QUARTER_SLABS,
+  );
+  // Amount the user takes off the Total buy so far (Cosmo), as typed.
+  const [deduction, setDeduction] = React.useState("");
+  const changeQuarterTargets = (q: string[]) => {
+    setQuarterTargets(q);
+    setTarget(sumTargets(q));
+  };
+  const changeTargetMode = (mode: TargetMode) => {
+    setTargetMode(mode);
+    if (mode === "quarter") setTarget(sumTargets(quarterTargets));
+  };
   // Rebate slabs (target → % incentive), e.g. 12M @ 2%, 13M @ 2.5%, 14M @ 3%.
   const [slabs, setSlabs] = React.useState<ContractSlab[]>([]);
   // Invoices moved to another date (invoiceKey → "yyyy/mm/dd") so they count
@@ -604,12 +660,12 @@ export function ContractsClient() {
 
   React.useEffect(() => {
     try {
-      const c = localStorage.getItem(COMPANIES_KEY);
+      const c = localStorage.getItem(companiesKey(kind));
       if (c) setPicked(new Set(JSON.parse(c) as string[]));
     } catch {
       // localStorage unavailable — values just won't persist.
     }
-  }, []);
+  }, [kind]);
 
   // Current view settings, saved with the contract and per company pick.
   const settings: ContractSettings = React.useMemo(
@@ -622,6 +678,10 @@ export function ContractsClient() {
       invoiceDates,
       priceBasis,
       linkRuns,
+      targetMode,
+      quarterTargets,
+      quarterSlabs,
+      deduction,
     }),
     [
       companies,
@@ -632,6 +692,10 @@ export function ContractsClient() {
       invoiceDates,
       priceBasis,
       linkRuns,
+      targetMode,
+      quarterTargets,
+      quarterSlabs,
+      deduction,
     ],
   );
 
@@ -640,16 +704,20 @@ export function ContractsClient() {
   React.useEffect(() => {
     if (companies === null || savedInfo !== null) return;
     try {
-      const all = readCompanySettings();
+      const all = readCompanySettings(kind);
       all[companyKey(companies)] = settings;
-      localStorage.setItem(COMPANY_SETTINGS_KEY, JSON.stringify(all));
+      localStorage.setItem(companySettingsKey(kind), JSON.stringify(all));
     } catch {
       // ignore
     }
-  }, [settings, companies, savedInfo]);
+  }, [settings, companies, savedInfo, kind]);
 
   const restoreSettings = (s: ContractSettings | undefined) => {
     setTarget(s?.target ?? "");
+    setTargetMode(s?.targetMode ?? "year");
+    setQuarterTargets(s?.quarterTargets ?? EMPTY_QUARTERS);
+    setQuarterSlabs(s?.quarterSlabs ?? EMPTY_QUARTER_SLABS);
+    setDeduction(s?.deduction ?? "");
     setSlabs(s?.slabs ?? []);
     setInvoiceDates(s?.invoiceDates ?? {});
     setPriceBasis(s?.priceBasis ?? "incTax");
@@ -695,7 +763,7 @@ export function ContractsClient() {
     }
     if (!all) {
       try {
-        localStorage.setItem(COMPANIES_KEY, JSON.stringify(pickedHere));
+        localStorage.setItem(companiesKey(kind), JSON.stringify(pickedHere));
       } catch {
         // ignore
       }
@@ -718,7 +786,7 @@ export function ContractsClient() {
     // Restore this pick's target + exclusions (this PC first, else the saved
     // contract's).
     restoreSettings(
-      readCompanySettings()[companyKey(chosen)] ?? existing?.settings,
+      readCompanySettings(kind)[companyKey(chosen)] ?? existing?.settings,
     );
   };
 
@@ -916,6 +984,32 @@ export function ContractsClient() {
     }
   }, []);
 
+  const addSalesFiles = React.useCallback(async (files: File[]) => {
+    const htmls = files.filter(isHtml);
+    if (htmls.length === 0) {
+      setError("Please choose .htm or .html sales files.");
+      return;
+    }
+    setError(null);
+    try {
+      const added: (SalesReport & { name: string })[] = [];
+      for (const file of htmls) {
+        const r = parseSalesHtml(await file.text());
+        if (r.found) added.push({ ...r, name: file.name });
+        else toast.warning(`No total (الإجمالي) found in ${file.name}`);
+      }
+      if (added.length > 0) {
+        setSalesFiles((prev) => [...prev, ...added]);
+        const sum = added.reduce((a, f) => a + f.amount, 0);
+        toast.success(
+          `Sales total: ${Math.round(sum).toLocaleString("en-US")} EGP from ${added.length} file${added.length === 1 ? "" : "s"}`,
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read a sales file.");
+    }
+  }, []);
+
   const addStockFiles = React.useCallback(async (files: File[]) => {
     const htmls = files.filter(isHtml);
     if (htmls.length === 0) {
@@ -1018,8 +1112,15 @@ export function ContractsClient() {
         columns: CONTRACT_COLUMN_ORDER,
         rows,
         settings,
-        achieved: Math.round(wholeTotal * 100) / 100,
+        achieved:
+          Math.round(
+            Math.max(
+              0,
+              wholeTotal - (kind === "cosmo" ? Number(deduction) || 0 : 0),
+            ) * 100,
+          ) / 100,
         dataThrough: computeInsights(wholeRows, priceBasis).lastDate,
+        kind,
       });
       setCurrentId(id);
       setBaseline(snap);
@@ -1081,8 +1182,8 @@ export function ContractsClient() {
   const downloadBackup = async () => {
     setBackingUp(true);
     try {
-      const contracts = await loadAllContracts();
-      downloadJson("contracts-backup", {
+      const contracts = await loadAllContracts(kind);
+      downloadJson(`${keyPrefix(kind)}-backup`, {
         exportedAt: new Date().toISOString(),
         kind: "contracts",
         contracts,
@@ -1124,13 +1225,26 @@ export function ContractsClient() {
     setCompanies(null);
     if (purchaseInputRef.current) purchaseInputRef.current.value = "";
     if (stockInputRef.current) stockInputRef.current.value = "";
+    setSalesFiles([]);
+    if (salesInputRef.current) salesInputRef.current.value = "";
   };
 
+  const salesTotal = salesFiles.reduce((a, f) => a + f.amount, 0);
   const hasStock = stockCodes !== null;
   const hasData = purchaseRows.length > 0;
   // Results are only shown once BOTH a purchase file and a stock file are in —
   // or when viewing a saved contract (which already had both).
   const bothReady = hasData && (hasStock || savedInfo !== null);
+
+  // Cosmo has no company step: once both files are in, use every company and
+  // go straight to the all-codes total buy.
+  const isCosmo = kind === "cosmo";
+  React.useEffect(() => {
+    if (!isCosmo || !bothReady || companies !== null) return;
+    applyCompanies(true);
+    setShowQuarters(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCosmo, bothReady, companies]);
 
   const totalLines = savedInfo?.totalLineCount ?? purchaseRows.length;
   const stockCount = savedInfo?.stockCodeCount ?? stockCodes?.length ?? 0;
@@ -1153,7 +1267,12 @@ export function ContractsClient() {
       </div>
 
       {/* Upload zones */}
-      <div className="grid gap-4 md:grid-cols-2">
+      <div
+        className={cn(
+          "grid gap-4 md:grid-cols-2",
+          kind === "cosmo" && "lg:grid-cols-3",
+        )}
+      >
         {/* Purchase files */}
         <div
           onDragOver={(e) => e.preventDefault()}
@@ -1173,6 +1292,8 @@ export function ContractsClient() {
             className="hidden"
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
+              // Reset so the next pick (even the same file) still fires.
+              e.target.value = "";
               if (files.length) addPurchaseFiles(files);
             }}
           />
@@ -1231,6 +1352,8 @@ export function ContractsClient() {
             className="hidden"
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
+              // Reset so the next pick (even the same file) still fires.
+              e.target.value = "";
               if (files.length) addStockFiles(files);
             }}
           />
@@ -1247,6 +1370,77 @@ export function ContractsClient() {
             </p>
           )}
         </div>
+
+        {/* Sales file(s) — Cosmo only */}
+        {kind === "cosmo" && (
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const files = Array.from(e.dataTransfer.files ?? []);
+              if (files.length) addSalesFiles(files);
+            }}
+            onClick={() => salesInputRef.current?.click()}
+            className={cn(
+              "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-6 text-center transition-colors",
+              salesFiles.length > 0
+                ? "border-primary/50 bg-primary/5"
+                : "border-border hover:border-primary/50 hover:bg-muted/40",
+            )}
+          >
+            <input
+              ref={salesInputRef}
+              type="file"
+              accept={HTML_ACCEPT}
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                // Reset so the next pick (even the same file) still fires.
+                e.target.value = "";
+                if (files.length) addSalesFiles(files);
+              }}
+            />
+            <div className="rounded-full bg-muted p-3">
+              <Receipt className="size-6 text-primary" />
+            </div>
+            <p className="font-medium">Sales file(s)</p>
+            <p className="text-sm text-muted-foreground">
+              Click or drag one or more .htm / .html sales reports
+            </p>
+            {salesFiles.length > 0 && (
+              <div className="flex w-full flex-col items-center gap-1 text-xs text-muted-foreground">
+                <p>
+                  Sales total{" "}
+                  <b className="text-sm font-semibold tabular-nums text-foreground">
+                    {salesTotal.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </b>{" "}
+                  EGP
+                </p>
+                <ul className="w-full max-w-md space-y-1">
+                  {salesFiles.map((f, i) => (
+                    <li
+                      key={`${f.name}-${i}`}
+                      className="truncate rounded-md bg-muted px-3 py-1.5 text-sm font-medium text-foreground"
+                    >
+                      {f.name}
+                      <span className="ml-2 text-xs font-normal tabular-nums text-muted-foreground">
+                        {f.amount.toLocaleString("en-US", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                        {f.from && <> · {f.from} → {f.to}</>}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {busy && (
@@ -1271,7 +1465,7 @@ export function ContractsClient() {
       )}
 
       {/* Company step: pick which companies to analyse before any results. */}
-      {bothReady && companies === null && (
+      {bothReady && companies === null && !isCosmo && (
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <label htmlFor="company-search" className="text-sm font-semibold">
@@ -1611,6 +1805,16 @@ export function ContractsClient() {
                     onSlabsChange={setSlabs}
                     target={target}
                     onTargetChange={setTarget}
+                    targetMode={targetMode}
+                    onTargetModeChange={changeTargetMode}
+                    quarterTargets={quarterTargets}
+                    onQuarterTargetsChange={changeQuarterTargets}
+                    quarterSlabs={quarterSlabs}
+                    onQuarterSlabsChange={setQuarterSlabs}
+                    deduction={deduction}
+                    onDeductionChange={setDeduction}
+                    salesTotal={isCosmo && salesFiles.length > 0 ? salesTotal : undefined}
+                    targetCard={isCosmo}
                     contractName={name}
                     basisLabel={PRICE_BASIS_LABEL[priceBasis]}
                     topItems={

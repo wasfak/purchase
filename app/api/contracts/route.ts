@@ -55,6 +55,23 @@ function cleanSettings(v: unknown) {
         : {},
     priceBasis: o.priceBasis === "exTax" ? "exTax" : "incTax",
     linkRuns: o.linkRuns === true,
+    targetMode: o.targetMode === "quarter" ? "quarter" : "year",
+    deduction: typeof o.deduction === "string" ? o.deduction : "",
+    quarterSlabs: [0, 1, 2, 3].map((i) => {
+      const list = Array.isArray(o.quarterSlabs) ? o.quarterSlabs[i] : [];
+      return Array.isArray(list)
+        ? list
+            .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+            .map((s) => ({
+              target: typeof s.target === "string" ? s.target : "",
+              pct: typeof s.pct === "string" ? s.pct : "",
+            }))
+        : [];
+    }),
+    quarterTargets: [0, 1, 2, 3].map((i) => {
+      const q = Array.isArray(o.quarterTargets) ? o.quarterTargets[i] : "";
+      return typeof q === "string" ? q : "";
+    }),
   };
 }
 
@@ -116,17 +133,23 @@ export async function GET(request: Request) {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const full = new URL(request.url).searchParams.get("full") === "1";
+  const params = new URL(request.url).searchParams;
+  const full = params.get("full") === "1";
+  // Cosmo contracts are listed apart; "normal" also covers older docs with no kind.
+  const kindFilter =
+    params.get("kind") === "cosmo"
+      ? { kind: "cosmo" }
+      : { kind: { $ne: "cosmo" } };
   await connectDB();
   if (full) {
-    const docs = await ContractDoc.find({ ownerId: userId })
+    const docs = await ContractDoc.find({ ownerId: userId, ...kindFilter })
       .sort({ savedAt: -1 })
       .lean<LeanContract[]>();
     return NextResponse.json({
       contracts: docs.map((d) => ({ ...toMeta(d, userId), rows: d.rows ?? [] })),
     });
   }
-  const docs = await ContractDoc.find({}, { rows: 0 })
+  const docs = await ContractDoc.find(kindFilter, { rows: 0 })
     .sort({ savedAt: -1 })
     .lean<LeanContract[]>();
   const names = await ownerNames([...new Set(docs.map((d) => d.ownerId))]);
@@ -155,6 +178,7 @@ export async function POST(request: Request) {
 
   const doc = {
     key: id,
+    kind: body.kind === "cosmo" ? "cosmo" : "normal",
     name: (String(body.name ?? "").trim() || "Untitled contract") as string,
     savedAt: Date.now(),
     purchaseFileNames: Array.isArray(body.purchaseFileNames)
