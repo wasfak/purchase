@@ -30,6 +30,7 @@ export type ContractSettings = {
   quarterTargets?: string[]; // Q1..Q4 as typed (quarter mode)
   quarterSlabs?: ContractSlab[][]; // Q1..Q4 rebate slabs (quarter mode)
   deduction?: string; // amount taken off the Total buy so far (Cosmo), as typed
+  targetPct?: string; // rebate % earned on reaching the year target (Cosmo), as typed
 };
 
 /** One rebate slab: reach `target` buy → earn `pct`% of it as incentive. */

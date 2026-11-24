@@ -57,6 +57,7 @@ function cleanSettings(v: unknown) {
     linkRuns: o.linkRuns === true,
     targetMode: o.targetMode === "quarter" ? "quarter" : "year",
     deduction: typeof o.deduction === "string" ? o.deduction : "",
+    targetPct: typeof o.targetPct === "string" ? o.targetPct : "",
     quarterSlabs: [0, 1, 2, 3].map((i) => {
       const list = Array.isArray(o.quarterSlabs) ? o.quarterSlabs[i] : [];
       return Array.isArray(list)

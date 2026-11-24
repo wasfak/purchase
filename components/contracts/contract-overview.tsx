@@ -254,7 +254,7 @@ function GoalRing({
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
         <span className="text-3xl font-semibold tabular-nums tracking-tight">
-          {shown.toFixed(1)}%
+          {shown >= 1000 ? "999+" : shown.toFixed(1)}%
         </span>
         <span className="mt-0.5 text-xs text-muted-foreground">{caption}</span>
       </div>
@@ -708,6 +708,9 @@ function TargetCard({
   onQuarterTargetsChange,
   quarterTotals,
   hasSlabs,
+  targetPct,
+  onTargetPctChange,
+  achieved,
 }: {
   target: string;
   onTargetChange: (v: string) => void;
@@ -717,7 +720,13 @@ function TargetCard({
   onQuarterTargetsChange: (q: string[]) => void;
   quarterTotals: number[];
   hasSlabs: boolean;
+  targetPct: string;
+  onTargetPctChange?: (v: string) => void;
+  achieved: number;
 }) {
+  const yearT = Number(target) || 0;
+  const yearPct = Number(targetPct) || 0;
+  const yearRebate = Math.round(yearT * yearPct) / 100;
   const setQuarter = (i: number, v: string) =>
     onQuarterTargetsChange(
       [0, 1, 2, 3].map((j) => (j === i ? cleanAmount(v) : quarterTargets[j] ?? "")),
@@ -729,7 +738,7 @@ function TargetCard({
         title="Target"
         hint={
           hasSlabs
-            ? "Rebate slabs are set — the performance card tracks the next slab; this target is kept with the contract."
+            ? "Rebate slabs are set — the performance card tracks the next slab; a year target with a rebate % counts as a slab too."
             : "The buy target from the contract — one figure for the year, or one per quarter."
         }
         right={
@@ -774,6 +783,39 @@ function TargetCard({
             className={cn(amountInput, "w-48")}
           />
           <span className="text-xs text-muted-foreground">{CURRENCY}</span>
+          {onTargetPctChange && (
+            <>
+              <label htmlFor="year-target-pct" className="ml-3 text-sm font-medium">
+                Rebate
+              </label>
+              <input
+                id="year-target-pct"
+                type="text"
+                inputMode="decimal"
+                value={targetPct}
+                onChange={(e) => onTargetPctChange(cleanAmount(e.target.value))}
+                placeholder="e.g. 2"
+                className={cn(amountInput, "w-20")}
+              />
+              <span className="text-xs text-muted-foreground">%</span>
+              {yearT > 0 && yearPct > 0 && (
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  ={" "}
+                  <b className="font-semibold text-foreground">
+                    {full(yearRebate)} {CURRENCY}
+                  </b>
+                  {" · "}
+                  {achieved >= yearT ? (
+                    <b className="font-semibold text-viz-good-ink">Reached</b>
+                  ) : (
+                    <b className="font-semibold text-destructive">
+                      −{full(yearT - achieved)} to go
+                    </b>
+                  )}
+                </span>
+              )}
+            </>
+          )}
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1859,6 +1901,8 @@ export function ContractOverview({
   onQuarterSlabsChange,
   deduction = "",
   onDeductionChange,
+  targetPct = "",
+  onTargetPctChange,
   salesTotal,
   contractName,
   basisLabel,
@@ -1883,6 +1927,9 @@ export function ContractOverview({
   /** Cosmo: amount taken off the Total buy so far (as typed). */
   deduction?: string;
   onDeductionChange?: (v: string) => void;
+  /** Cosmo: rebate % earned on reaching the year target (as typed). */
+  targetPct?: string;
+  onTargetPctChange?: (v: string) => void;
   /** Cosmo: grand total of the uploaded sales file(s), shown beside the buy. */
   salesTotal?: number;
   contractName: string;
@@ -1896,7 +1943,19 @@ export function ContractOverview({
   const deducted = targetCard ? Number(deduction) || 0 : 0;
   const achieved = Math.max(0, grossAchieved - deducted);
   const perQuarter = targetCard && targetMode === "quarter";
-  const yearSlabs = perQuarter ? [] : slabs;
+  // Cosmo year mode: a slab with no rebate % earns nothing, so it isn't
+  // tracked; the year target with its rebate % counts as a slab of its own.
+  const yearTarget = Number(target) || 0;
+  const yearSlabs = perQuarter
+    ? []
+    : targetCard
+      ? [
+          ...slabs.filter((s) => (Number(s.pct) || 0) > 0),
+          ...(yearTarget > 0 && (Number(targetPct) || 0) > 0
+            ? [{ target, pct: targetPct }]
+            : []),
+        ]
+      : slabs;
   const targetReady =
     !targetCard ||
     yearSlabs.length > 0 ||
@@ -1927,6 +1986,9 @@ export function ContractOverview({
         onQuarterTargetsChange={onQuarterTargetsChange}
         quarterTotals={quarterTotals}
         hasSlabs={slabs.length > 0}
+        targetPct={targetPct}
+        onTargetPctChange={onTargetPctChange}
+        achieved={achieved}
       />
       )}
       <Hero

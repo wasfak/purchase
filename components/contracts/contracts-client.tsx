@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  FilePlus2,
   FileText,
   Gift,
   Loader2,
@@ -138,6 +139,7 @@ function settingsSnapshot(name: string, s: ContractSettings | undefined): string
     targetMode: s?.targetMode ?? "year",
     quarterTargets: s?.quarterTargets ?? ["", "", "", ""],
     deduction: s?.deduction ?? "",
+    targetPct: s?.targetPct ?? "",
     quarterSlabs: (s?.quarterSlabs ?? [[], [], [], []]).map((l) =>
       l.map((x) => [x.target, x.pct]),
     ),
@@ -518,6 +520,10 @@ export function ContractsClient({
   // Set when a saved contract is open, so re-saving updates it in place. A
   // freshly built (unsaved) result leaves this null.
   const [currentId, setCurrentId] = React.useState<string | null>(null);
+  // "New contract" was pressed: the next company pick must NOT attach to an
+  // already-saved contract with the same pick (or reuse its settings), so
+  // Save creates a new contract instead of overwriting the old one.
+  const [freshNew, setFreshNew] = React.useState(false);
   // Snapshot of the last saved/opened state (null = never saved), and whether
   // freshly uploaded lines have been saved — together they drive the
   // "unsaved changes" bar and the leave-page warning.
@@ -628,6 +634,8 @@ export function ContractsClient({
   );
   // Amount the user takes off the Total buy so far (Cosmo), as typed.
   const [deduction, setDeduction] = React.useState("");
+  // Rebate % earned on reaching the year target (Cosmo), as typed.
+  const [targetPct, setTargetPct] = React.useState("");
   const changeQuarterTargets = (q: string[]) => {
     setQuarterTargets(q);
     setTarget(sumTargets(q));
@@ -682,6 +690,7 @@ export function ContractsClient({
       quarterTargets,
       quarterSlabs,
       deduction,
+      targetPct,
     }),
     [
       companies,
@@ -696,6 +705,7 @@ export function ContractsClient({
       quarterTargets,
       quarterSlabs,
       deduction,
+      targetPct,
     ],
   );
 
@@ -718,6 +728,7 @@ export function ContractsClient({
     setQuarterTargets(s?.quarterTargets ?? EMPTY_QUARTERS);
     setQuarterSlabs(s?.quarterSlabs ?? EMPTY_QUARTER_SLABS);
     setDeduction(s?.deduction ?? "");
+    setTargetPct(s?.targetPct ?? "");
     setSlabs(s?.slabs ?? []);
     setInvoiceDates(s?.invoiceDates ?? {});
     setPriceBasis(s?.priceBasis ?? "incTax");
@@ -772,12 +783,14 @@ export function ContractsClient({
     setCompanies(chosen);
     // Each company pick is its own contract: if one is already saved for this
     // exact pick, saving updates it; otherwise Save creates a new one.
-    const existing = saved.find(
-      (c) =>
-        c.mine !== false &&
-        c.settings &&
-        sameCompanies(c.settings.companies, chosen),
-    );
+    const existing = freshNew
+      ? undefined
+      : saved.find(
+          (c) =>
+            c.mine !== false &&
+            c.settings &&
+            sameCompanies(c.settings.companies, chosen),
+        );
     setCurrentId(existing?.id ?? null);
     setName(existing?.name ?? (all ? "" : chosen.join("، ")));
     setBaseline(
@@ -786,7 +799,9 @@ export function ContractsClient({
     // Restore this pick's target + exclusions (this PC first, else the saved
     // contract's).
     restoreSettings(
-      readCompanySettings(kind)[companyKey(chosen)] ?? existing?.settings,
+      freshNew
+        ? undefined
+        : (readCompanySettings(kind)[companyKey(chosen)] ?? existing?.settings),
     );
   };
 
@@ -1123,6 +1138,7 @@ export function ContractsClient({
         kind,
       });
       setCurrentId(id);
+      setFreshNew(false);
       setBaseline(snap);
       setSavedLive(true);
       await refreshSaved();
@@ -1163,6 +1179,7 @@ export function ContractsClient({
       });
       setName(c.name);
       setCurrentId(c.id);
+      setFreshNew(false);
       // A saved contract is already filtered — skip the company step, but
       // keep its company list so re-saving keeps the pick.
       setCompanies(c.settings?.companies ?? []);
@@ -1207,8 +1224,8 @@ export function ContractsClient({
     }
   };
 
-  const clearAll = () => {
-    if (!confirmDiscard()) return;
+  const clearAll = (confirmed = false) => {
+    if (confirmed !== true && !confirmDiscard()) return;
     setBaseline(null);
     setSavedLive(false);
     setPurchaseRows([]);
@@ -1227,6 +1244,17 @@ export function ContractsClient({
     if (stockInputRef.current) stockInputRef.current.value = "";
     setSalesFiles([]);
     if (salesInputRef.current) salesInputRef.current.value = "";
+  };
+
+  // Start a brand-new contract: clear the files and every setting, and make
+  // sure the next Save creates a new contract (never updates an old one).
+  const newContract = () => {
+    if (!confirmDiscard()) return;
+    clearAll(true);
+    restoreSettings(undefined);
+    setFreshNew(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    toast.success("New contract — upload its files, then Save to cloud");
   };
 
   const salesTotal = salesFiles.reduce((a, f) => a + f.amount, 0);
@@ -1262,8 +1290,17 @@ export function ContractsClient({
         loading={loadingSaved}
       />
 
-      <div className="flex items-center gap-2 pt-2">
-        <h2 className="text-lg font-semibold">Upload new data</h2>
+      <div className="flex flex-wrap items-center gap-2 pt-2">
+        <h2 className="text-lg font-semibold">
+          {freshNew
+            ? "New contract"
+            : currentId
+              ? `Editing: ${saved.find((c) => c.id === currentId)?.name || "saved contract"}`
+              : "Upload new data"}
+        </h2>
+        <Button className="ml-auto" onClick={newContract}>
+          <FilePlus2 /> New contract
+        </Button>
       </div>
 
       {/* Upload zones */}
@@ -1813,6 +1850,8 @@ export function ContractsClient({
                     onQuarterSlabsChange={setQuarterSlabs}
                     deduction={deduction}
                     onDeductionChange={setDeduction}
+                    targetPct={targetPct}
+                    onTargetPctChange={setTargetPct}
                     salesTotal={isCosmo && salesFiles.length > 0 ? salesTotal : undefined}
                     targetCard={isCosmo}
                     contractName={name}
@@ -1882,7 +1921,7 @@ export function ContractsClient({
                         >
                           <Download /> Excel
                         </Button>
-                        <Button variant="outline" size="sm" onClick={clearAll}>
+                        <Button variant="outline" size="sm" onClick={() => clearAll()}>
                           <X /> Clear
                         </Button>
                       </div>
@@ -1911,7 +1950,7 @@ export function ContractsClient({
           ) : view === "lines" ? (
             <LinesView
               rows={supplierFilteredRows}
-              onClear={clearAll}
+              onClear={() => clearAll()}
               supplierFilter={
                 <SupplierChips
                   suppliers={suppliers}
@@ -1925,7 +1964,7 @@ export function ContractsClient({
           ) : (
             <MarginView
               rows={supplierFilteredRows}
-              onClear={clearAll}
+              onClear={() => clearAll()}
               supplierFilter={
                 <SupplierChips
                   suppliers={suppliers}
