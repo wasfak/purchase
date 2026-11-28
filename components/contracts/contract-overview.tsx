@@ -1942,7 +1942,8 @@ export function ContractOverview({
   // Cosmo: the typed deduction comes off the Total buy before any maths.
   const deducted = targetCard ? Number(deduction) || 0 : 0;
   const achieved = Math.max(0, grossAchieved - deducted);
-  const perQuarter = targetCard && targetMode === "quarter";
+  // Both modes: Target card with Year / Per quarter on top.
+  const perQuarter = targetMode === "quarter";
   // Cosmo year mode: a slab with no rebate % earns nothing, so it isn't
   // tracked; the year target with its rebate % counts as a slab of its own.
   const yearTarget = Number(target) || 0;
@@ -1976,7 +1977,6 @@ export function ContractOverview({
     }).catch(() => toast.error("Couldn't build the summary"));
   return (
     <div className="space-y-5">
-      {targetCard && (
       <TargetCard
         target={target}
         onTargetChange={onTargetChange}
@@ -1987,10 +1987,9 @@ export function ContractOverview({
         quarterTotals={quarterTotals}
         hasSlabs={slabs.length > 0}
         targetPct={targetPct}
-        onTargetPctChange={onTargetPctChange}
+        onTargetPctChange={targetCard ? onTargetPctChange : undefined}
         achieved={achieved}
       />
-      )}
       <Hero
         targetCard={targetCard}
         targetMode={targetMode}
@@ -2018,7 +2017,7 @@ export function ContractOverview({
           onSlabsChange={onSlabsChange}
           target={target}
           onTargetChange={onTargetChange}
-          showYearTarget={!targetCard}
+          showYearTarget={false}
           redGap={targetCard}
         />
       )}

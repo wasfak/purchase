@@ -14,7 +14,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { computeAchieved, type PurchaseRow } from "@/lib/contracts";
-import { slabStatuses, type ContractMeta } from "@/lib/contracts-store";
+import {
+  salesFilesTotal,
+  slabStatuses,
+  type ContractMeta,
+} from "@/lib/contracts-store";
 import { loadContract } from "@/lib/server-contracts-store";
 
 const CURRENCY = "EGP";
@@ -229,6 +233,14 @@ function ContractCard({
               {target > 0 ? money(target) : "—"}
             </dd>
           </div>
+          {(meta.salesFiles?.length ?? 0) > 0 && (
+            <div>
+              <dt className="text-xs text-muted-foreground">Sales total</dt>
+              <dd className="font-semibold tabular-nums">
+                {money(salesFilesTotal(meta.salesFiles))}
+              </dd>
+            </div>
+          )}
           {target > 0 && achieved !== undefined && (
             <div>
               <dt className="text-xs text-muted-foreground">Remaining</dt>
@@ -251,7 +263,7 @@ function ContractCard({
           <div className="flex flex-1 gap-1">
             {slabs.map((s, i) => (
               <span
-                key={s.target}
+                key={i}
                 title={`Slab ${i + 1}: ${money(s.target)} → ${s.pct}% = ${money(s.incentive)}`}
                 className={cn(
                   "flex h-6 flex-1 items-center justify-center rounded-md text-[10px] font-semibold",

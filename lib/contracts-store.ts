@@ -76,8 +76,23 @@ export type ContractMeta = {
   settings?: ContractSettings;
   achieved?: number; // total buy at save time (after exclusions)
   dataThrough?: string; // latest purchase date in the lines ("yyyy/mm/dd")
+  salesFiles?: SavedSalesFile[]; // Cosmo: uploaded sales report totals
   columns: string[];
 };
+
+/** One uploaded sales report's grand totals, kept with the contract. */
+export type SavedSalesFile = {
+  name: string;
+  amount: number; // المبلغ — grand total
+  qty: number;
+  profit: number;
+  from: string; // "yyyy/mm/dd" or ""
+  to: string;
+};
+
+/** Grand sales total across a contract's saved sales files. */
+export const salesFilesTotal = (files: SavedSalesFile[] | undefined) =>
+  (files ?? []).reduce((a, f) => a + (Number(f.amount) || 0), 0);
 
 export type Contract = ContractMeta & { rows: Cell[][] };
 

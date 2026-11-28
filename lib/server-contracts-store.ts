@@ -10,6 +10,7 @@ import type {
   Contract,
   ContractMeta,
   ContractSettings,
+  SavedSalesFile,
 } from "@/lib/contracts-store";
 
 /** Which contracts tool a contract belongs to; each lists only its own. */
@@ -47,6 +48,7 @@ export async function saveContract(input: {
   settings?: ContractSettings;
   achieved?: number;
   dataThrough?: string;
+  salesFiles?: SavedSalesFile[];
   kind?: ContractKind;
 }): Promise<string> {
   const res = await fetch("/api/contracts", {

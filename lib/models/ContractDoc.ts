@@ -26,6 +26,9 @@ const ContractDocSchema = new Schema(
     achieved: { type: Number, default: null },
     // Latest purchase date in the contract's lines ("yyyy/mm/dd").
     dataThrough: { type: String, default: "" },
+    // Cosmo: uploaded sales reports' grand totals ({ name, amount, qty,
+    // profit, from, to }), so the sales total survives a reopen.
+    salesFiles: { type: [Schema.Types.Mixed], default: [] },
     // Array of rows, each a values-array (Cell[]) aligned to `columns`.
     rows: { type: [Schema.Types.Mixed], default: [] },
     // Which contracts tool saved it: "normal" (default, incl. older docs with

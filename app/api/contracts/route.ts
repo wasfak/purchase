@@ -23,7 +23,25 @@ type LeanContract = {
   settings?: unknown;
   achieved?: number | null;
   dataThrough?: string;
+  salesFiles?: unknown[];
 };
+
+// Keep only well-formed sales-report totals.
+function cleanSalesFiles(v: unknown) {
+  if (!Array.isArray(v)) return [];
+  const num = (x: unknown) => (Number.isFinite(Number(x)) ? Number(x) : 0);
+  const str = (x: unknown) => (typeof x === "string" ? x : "");
+  return v
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === "object")
+    .map((f) => ({
+      name: str(f.name),
+      amount: num(f.amount),
+      qty: num(f.qty),
+      profit: num(f.profit),
+      from: str(f.from),
+      to: str(f.to),
+    }));
+}
 
 // Keep only the known ContractSettings fields, as strings.
 function cleanSettings(v: unknown) {
@@ -123,6 +141,7 @@ function toMeta(
     settings: cleanSettings(d.settings) ?? undefined,
     achieved: typeof d.achieved === "number" ? d.achieved : undefined,
     dataThrough: d.dataThrough || undefined,
+    salesFiles: cleanSalesFiles(d.salesFiles),
   };
 }
 
@@ -200,6 +219,7 @@ export async function POST(request: Request) {
       /^\d{4}\/\d{2}\/\d{2}$/.test(body.dataThrough)
         ? body.dataThrough
         : "",
+    salesFiles: cleanSalesFiles(body.salesFiles),
   };
 
   await connectDB();

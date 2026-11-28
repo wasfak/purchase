@@ -1135,6 +1135,14 @@ export function ContractsClient({
             ) * 100,
           ) / 100,
         dataThrough: computeInsights(wholeRows, priceBasis).lastDate,
+        salesFiles: salesFiles.map(({ name, amount, qty, profit, from, to }) => ({
+          name,
+          amount,
+          qty,
+          profit,
+          from,
+          to,
+        })),
         kind,
       });
       setCurrentId(id);
@@ -1173,6 +1181,7 @@ export function ContractsClient({
       setStockCodes(null);
       setStockCompanies(new Map());
       setStockFileName(c.stockFileName || null);
+      setSalesFiles((c.salesFiles ?? []).map((f) => ({ ...f, found: true })));
       setSavedInfo({
         stockCodeCount: c.stockCodeCount,
         totalLineCount: c.totalLineCount,

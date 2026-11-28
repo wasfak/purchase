@@ -4,7 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { connectDB } from "@/lib/db";
 import { ContractDoc } from "@/lib/models/ContractDoc";
 import { canEditAllContracts } from "@/lib/access";
-import type { ContractSettings } from "@/lib/contracts-store";
+import type { ContractSettings, SavedSalesFile } from "@/lib/contracts-store";
 
 export const runtime = "nodejs";
 
@@ -23,6 +23,7 @@ type LeanContract = {
   settings?: ContractSettings | null;
   achieved?: number | null;
   dataThrough?: string;
+  salesFiles?: SavedSalesFile[];
 };
 
 // GET /api/contracts/[id] — one saved contract with its rows, or null. Any
@@ -57,6 +58,7 @@ export async function GET(
       settings: d.settings ?? undefined,
       achieved: typeof d.achieved === "number" ? d.achieved : undefined,
       dataThrough: d.dataThrough || undefined,
+      salesFiles: Array.isArray(d.salesFiles) ? d.salesFiles : [],
     },
   });
 }
